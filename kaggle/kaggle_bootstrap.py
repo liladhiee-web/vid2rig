@@ -126,28 +126,41 @@ def install_deps(repo_dir):
 
 
 def setup_smpl():
-    step("Locating gated SMPL body models")
-    hits = []
-    for pattern in ("SMPL_NEUTRAL.pkl", "SMPL_NEUTRAL.npz", "SMPLX_NEUTRAL*.npz"):
-        hits += glob.glob(f"/kaggle/input/**/{pattern}", recursive=True)
-    if not hits:
+    step("Locating gated SMPL/SMPL-X body models")
+    # gvhmr layout: <root>/smplx/SMPLX_NEUTRAL.npz   (required for inference)
+    #               <root>/smpl/SMPL_NEUTRAL.pkl     (optional, overlay rendering only)
+    dest = "/kaggle/working/body_models"
+    wanted = {
+        "smplx": "SMPLX_NEUTRAL.npz",
+        "smpl": "SMPL_NEUTRAL.pkl",
+    }
+    os.environ["GVHMR_BODY_MODELS"] = dest
+    found_any = False
+    for sub, fname in wanted.items():
+        sub_dir = os.path.join(dest, sub)
+        os.makedirs(sub_dir, exist_ok=True)
+        target = os.path.join(sub_dir, fname)
+        if os.path.exists(target):
+            print(f"  = {sub}/{fname} (already present)")
+            found_any = True
+            continue
+        hits = glob.glob(f"/kaggle/input/**/{fname}", recursive=True)
+        if hits:
+            shutil.copy(hits[0], target)
+            print(f"  + {sub}/{fname}")
+            found_any = True
+
+    if not os.path.exists(os.path.join(dest, "smplx", "SMPLX_NEUTRAL.npz")):
         print(
-            "WARNING: no SMPL body models found!\n"
-            "  Register (free) at https://smpl-x.is.tue.mpg.de/ and "
-            "https://smpl.is.tue.mpg.de/, download SMPL_NEUTRAL.pkl (and "
-            "SMPLX_NEUTRAL.npz if desired), then add them as a PRIVATE Kaggle "
-            "dataset and attach it to this notebook."
+            "WARNING: SMPLX_NEUTRAL.npz not found in any attached dataset!\n"
+            "  Motion inference WILL FAIL until it's provided:\n"
+            "  1. Register free at https://smpl-x.is.tue.mpg.de/ and download\n"
+            "     models_smplx_v1_1 (SMPLX_NEUTRAL.npz)\n"
+            "  2. Create a PRIVATE Kaggle dataset containing the file and attach\n"
+            "     it to this notebook, then re-run."
         )
-        return
-    dest = os.path.join(REPO_DIR, "smpl")
-    os.makedirs(dest, exist_ok=True)
-    for h in hits:
-        target = os.path.join(dest, os.path.basename(h))
-        if not os.path.exists(target):
-            shutil.copy(h, target)
-        print("  +", os.path.basename(h))
-    os.environ["GVHMR_SMPL_DIR"] = dest
-    os.environ["SMPL_MODEL_DIR"] = dest
+    else:
+        print("Body-model root:", dest)
 
 
 # ---------------------------------------------------------------- 4. run

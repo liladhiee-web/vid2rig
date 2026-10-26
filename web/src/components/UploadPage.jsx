@@ -119,6 +119,10 @@ export default function UploadPage({ character, onCharacter, onProcess, job, hea
             <span className={health.cuda ? 'healthy' : 'bad'}>
               GPU: {health.cuda ? `✓ ${health.device}` : '✗ none'}
             </span>
+            {' · '}
+            <span className={health.body_models ? 'healthy' : 'bad'}>
+              SMPL-X: {health.body_models ? '✓ found' : '✗ missing'}
+            </span>
           </div>
         ) : (
           <div className="statusline">Checking…</div>

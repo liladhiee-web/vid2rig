@@ -246,7 +246,13 @@ def get_job(job_id: str) -> Optional[Job]:
 
 
 def service_info() -> dict:
-    info = {"gvhmr": False, "cuda": False, "device": None, "smpl_dir": None}
+    info = {
+        "gvhmr": False,
+        "cuda": False,
+        "device": None,
+        "body_models": False,
+        "body_models_dir": None,
+    }
     try:
         import torch
 
@@ -261,7 +267,9 @@ def service_info() -> dict:
         info["gvhmr"] = True
     except Exception:
         pass
-    for var in ("GVHMR_SMPL_DIR", "SMPL_MODEL_DIR"):
-        if os.environ.get(var) and os.path.isdir(os.environ[var]):
-            info["smpl_dir"] = os.environ[var]
+    bm = os.environ.get("GVHMR_BODY_MODELS", "")
+    info["body_models_dir"] = bm or None
+    info["body_models"] = os.path.isfile(
+        os.path.join(bm, "smplx", "SMPLX_NEUTRAL.npz")
+    )
     return info

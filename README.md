@@ -59,8 +59,10 @@ SMPL body model files (registration-gated, see below) are located via the
 ## Quickstart — Kaggle (free T4 GPU, no local GPU needed)
 
 1. **Register** (free) at [smpl-x.is.tue.mpg.de](https://smpl-x.is.tue.mpg.de/) and
-   [smpl.is.tue.mpg.de](https://smpl.is.tue.mpg.de/) to legally download the body models.
-   Put `SMPL_NEUTRAL.pkl` (and optionally `SMPLX_NEUTRAL.npz`) in a **private Kaggle
+   download the SMPL-X v1.1 models — the file `SMPLX_NEUTRAL.npz` is **required**
+   for inference. (Optionally also register at
+   [smpl.is.tue.mpg.de](https://smpl.is.tue.mpg.de/) and add `SMPL_NEUTRAL.pkl` —
+   that is only needed for the overlay video.) Put the files in a **private Kaggle
    dataset** and attach it to the notebook.
 2. Open `kaggle/vid2rig_launcher.ipynb` (or copy `kaggle/kaggle_bootstrap.py` into a
    notebook cell), set the accelerator to **GPU T4 x2** and enable **Internet**.
