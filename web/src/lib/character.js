@@ -22,7 +22,16 @@ export async function loadCharacterFile(file) {
     try {
       object3D = loader.parse(buffer, '')
     } catch (e) {
-      throw new Error(`FBX parse failed: ${e?.message || e}`)
+      const msg = e?.message || String(e)
+      const version = msg.match(/FileVersion:\s*(\d+)/)?.[1]
+      if (version && parseInt(version, 10) < 7000) {
+        throw new Error(
+          `This FBX is version ${version} (legacy). three.js needs FBX 7.x — ` +
+            `re-export as "FBX 7.4 binary" (Blender's default) or convert it with ` +
+            `the free Autodesk FBX Converter (FBX 6.1 → FBX 2013+), then upload again.`,
+        )
+      }
+      throw new Error(`FBX parse failed: ${msg}`)
     }
   } else {
     throw new Error('Unsupported character file. Use .glb, .gltf or .fbx')
