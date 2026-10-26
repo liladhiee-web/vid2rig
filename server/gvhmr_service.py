@@ -103,6 +103,22 @@ def _set_status(job: Job, status: str, message: str = "", progress: float = None
 # ---------------------------------------------------------------- pipeline
 
 
+def _install_numpy_shims():
+    """numpy>=1.24 removed aliases (np.bool, np.int, ...) that legacy packages
+    (chumpy) still import at module level. Re-add them before importing gvhmr."""
+    import numpy as np
+
+    aliases = {
+        "bool": bool, "int": int, "float": float, "complex": complex,
+        "object": object, "unicode": str, "str": str,
+    }
+    for name, val in aliases.items():
+        try:
+            getattr(np, name)
+        except AttributeError:
+            setattr(np, name, val)
+
+
 def get_pipeline():
     """Load (once) the GVHMR pipeline used for all jobs."""
     global PIPELINE
@@ -111,6 +127,7 @@ def get_pipeline():
             return PIPELINE
         import torch
 
+        _install_numpy_shims()
         try:
             import gvhmr  # noqa: F401
         except ImportError as e:

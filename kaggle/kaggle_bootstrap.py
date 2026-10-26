@@ -79,34 +79,47 @@ def torch_cuda_ok():
         return False
 
 
+def _pip(*args, check=True):
+    return subprocess.run(
+        [sys.executable, "-m", "pip", "install", *args], check=check
+    )
+
+
 def install_deps(repo_dir):
     step("Installing dependencies")
-    server_req = os.path.join(repo_dir, "server", "requirements.txt")
-    # Core server deps (skip the gvhmr line — installed separately below)
-    subprocess.run(
-        [
-            sys.executable, "-m", "pip", "install", "-q",
-            "fastapi>=0.110", "uvicorn[standard]>=0.29", "python-multipart>=0.0.9",
-            "numpy>=1.26", "opencv-python-headless>=4.9",
-        ],
-        check=True,
+    _pip(
+        "-q",
+        "fastapi>=0.110", "uvicorn[standard]>=0.29", "python-multipart>=0.0.9",
+        "numpy>=1.26", "opencv-python-headless>=4.9",
     )
+
+    # chumpy is legacy (setup.py uses distutils + pip internals) and cannot
+    # build under PEP-517 isolation on Python 3.12+/numpy2. Pre-install it
+    # WITHOUT build isolation so gvhmr's resolver sees it as satisfied and
+    # never attempts its own (failing) build.
+    step("Pre-installing legacy chumpy (--no-build-isolation)")
+    r = _pip("chumpy", "--no-build-isolation", check=False)
+    if r.returncode != 0:
+        print(
+            "WARNING: chumpy pre-install failed. If GVHMR later complains about\n"
+            "legacy .pkl body models, convert them to .npz (chumpy-free) instead."
+        )
 
     if not torch_cuda_ok():
         drv = nvidia_driver_cuda() or 12.4
         extra = "cu124" if drv < 12.6 else "cu126"
         print(f"Installing torch CUDA extra: {extra} (driver CUDA {drv})")
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-q", f"gvhmr[preproc,{extra}]"],
-            check=True,
-        )
+        args = [f"gvhmr[preproc,{extra}]"]
     else:
         print("System torch already sees the GPU — installing gvhmr[preproc] only")
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-q", "gvhmr[preproc]"],
-            check=True,
+        args = ["gvhmr[preproc]"]
+
+    r = _pip(*args, check=False)
+    if r.returncode != 0:
+        print(
+            "ERROR: gvhmr install failed — the backend will start but motion\n"
+            "inference will be unavailable. Check /api/health and pip output above."
         )
-    print(server_req, "handled")
 
 
 # ---------------------------------------------------------------- 3. SMPL
