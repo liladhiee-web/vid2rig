@@ -32,13 +32,19 @@ export default function App() {
 
     return new Promise((resolve, reject) => {
       subscribeJobEvents(
-        job_id,
-        (e) =>
-          setJob((j) =>
-            j && j.id === job_id
-              ? { ...j, status: e.status, message: e.message, progress: e.progress, events: [...(j.events || []), e] }
-              : j,
-          ),
+      job_id,
+      (e) =>
+        setJob((j) => {
+          if (!j || j.id !== job_id) return j
+          const isPing = !!e.ping
+          return {
+            ...j,
+            status: e.status,
+            message: e.message,
+            progress: e.progress,
+            events: isPing ? j.events : [...(j.events || []), e],
+          }
+        }),
         async (e) => {
           if (e.status === 'error') {
             setJob((j) => ({ ...j, status: 'error', message: 'Job failed — see log' }))

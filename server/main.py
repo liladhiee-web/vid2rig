@@ -15,6 +15,7 @@ Run:  uvicorn server.main:app --host 0.0.0.0 --port 8000
 import asyncio
 import json
 import os
+import time
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -57,6 +58,7 @@ async def job_events(job_id: str):
 
     async def stream():
         seen = 0
+        last_sent = time.time()
         while True:
             with svc.JOBS_LOCK:
                 events = list(job.events[seen:])
@@ -64,9 +66,29 @@ async def job_events(job_id: str):
                 done = job.status in ("done", "error")
             for e in events:
                 yield f"data: {json.dumps(e)}\n\n"
+                last_sent = time.time()
             if done:
                 yield f"data: {json.dumps({'status': job.status, 'final': True})}\n\n"
                 return
+            # Heartbeat: proxies (Cloudflare) drop connections idle > ~100s,
+            # and inference stages can be silent for minutes. Re-send the
+            # current status periodically so the tunnel never goes idle.
+            if time.time() - last_sent > 15:
+                with svc.JOBS_LOCK:
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "time": time.time(),
+                                "status": job.status,
+                                "message": job.message,
+                                "progress": job.progress,
+                                "ping": True,
+                            }
+                        )
+                        + "\n\n"
+                    )
+                last_sent = time.time()
             await asyncio.sleep(0.4)
 
     return StreamingResponse(

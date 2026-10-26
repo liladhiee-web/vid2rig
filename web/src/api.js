@@ -34,9 +34,14 @@ export function uploadVideo(file, onProgress) {
 export function subscribeJobEvents(jobId, onEvent, onDone, onError) {
   const es = new EventSource(`/api/jobs/${jobId}/events`)
   let finished = false
+  let errors = 0
+  es.onopen = () => {
+    errors = 0
+  }
   es.onmessage = (e) => {
+    errors = 0
     const data = JSON.parse(e.data)
-    onEvent(data)
+    onEvent(data) // pings flow through; the caller decides whether to log them
     if (data.final) {
       finished = true
       es.close()
@@ -44,8 +49,15 @@ export function subscribeJobEvents(jobId, onEvent, onDone, onError) {
     }
   }
   es.onerror = () => {
-    es.close()
-    if (!finished) onError?.(new Error('Connection to job lost'))
+    // EventSource auto-reconnects unless we close it. The tunnel may blip
+    // (proxy idle timeout) while a long inference stage is silent — allow
+    // several reconnect attempts before declaring the job lost.
+    if (finished) return
+    errors += 1
+    if (errors >= 8) {
+      es.close()
+      onError?.(new Error('Connection to job lost'))
+    }
   }
   return () => es.close()
 }
