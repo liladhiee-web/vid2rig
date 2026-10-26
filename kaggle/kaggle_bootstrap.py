@@ -125,6 +125,64 @@ def install_deps(repo_dir):
 # ---------------------------------------------------------------- 3. SMPL
 
 
+def _numpy_shims():
+    """Re-add numpy aliases removed in numpy>=1.24 (needed by legacy chumpy)."""
+    import warnings
+
+    import numpy as np
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        aliases = {
+            "bool": bool, "int": int, "float": float, "complex": complex,
+            "object": object, "unicode": str, "str": str,
+        }
+        for name, val in aliases.items():
+            try:
+                getattr(np, name)
+            except AttributeError:
+                setattr(np, name, val)
+
+
+def _convert_smplx_pkl_to_npz(pkl_path: str, npz_path: str) -> bool:
+    """Convert a chumpy-based SMPLX_NEUTRAL.pkl into a plain npz."""
+    import pickle
+    import warnings
+
+    import numpy as np
+    from scipy import sparse
+
+    _numpy_shims()
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with open(pkl_path, "rb") as f:
+                data = pickle.load(f, encoding="latin1")
+        out = {}
+        for k, v in data.items():
+            if isinstance(v, np.ndarray):
+                out[k] = v
+            elif isinstance(v, (int, float, str, bytes, list, tuple, dict)):
+                out[k] = v
+            else:  # chumpy array or similar
+                try:
+                    if sparse.issparse(v):
+                        out[k] = np.asarray(v.todense())
+                    else:
+                        out[k] = np.asarray(v)
+                except Exception:
+                    print(f"    (skipping key '{k}')")
+        if "v_template" not in out:
+            print("    (converted file lacks v_template — looks wrong, discarding)")
+            return False
+        np.savez(npz_path, **out)
+        print(f"    converted {pkl_path} -> {npz_path} ({len(out)} keys)")
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"    pkl->npz conversion failed: {type(e).__name__}: {e}")
+        return False
+
+
 def setup_smpl():
     step("Locating gated SMPL/SMPL-X body models")
     # gvhmr layout: <root>/smplx/SMPLX_NEUTRAL.npz   (required for inference)
@@ -135,32 +193,44 @@ def setup_smpl():
         "smpl": "SMPL_NEUTRAL.pkl",
     }
     os.environ["GVHMR_BODY_MODELS"] = dest
-    found_any = False
-    for sub, fname in wanted.items():
-        sub_dir = os.path.join(dest, sub)
-        os.makedirs(sub_dir, exist_ok=True)
-        target = os.path.join(sub_dir, fname)
-        if os.path.exists(target):
-            print(f"  = {sub}/{fname} (already present)")
-            found_any = True
-            continue
-        hits = glob.glob(f"/kaggle/input/**/{fname}", recursive=True)
+    smplx_npz = os.path.join(dest, "smplx", "SMPLX_NEUTRAL.npz")
+    if not os.path.exists(smplx_npz):
+        os.makedirs(os.path.join(dest, "smplx"), exist_ok=True)
+        hits = glob.glob("/kaggle/input/**/SMPLX_NEUTRAL.npz", recursive=True)
         if hits:
-            shutil.copy(hits[0], target)
-            print(f"  + {sub}/{fname}")
-            found_any = True
-
-    if not os.path.exists(os.path.join(dest, "smplx", "SMPLX_NEUTRAL.npz")):
-        print(
-            "WARNING: SMPLX_NEUTRAL.npz not found in any attached dataset!\n"
-            "  Motion inference WILL FAIL until it's provided:\n"
-            "  1. Register free at https://smpl-x.is.tue.mpg.de/ and download\n"
-            "     models_smplx_v1_1 (SMPLX_NEUTRAL.npz)\n"
-            "  2. Create a PRIVATE Kaggle dataset containing the file and attach\n"
-            "     it to this notebook, then re-run."
-        )
+            shutil.copy(hits[0], smplx_npz)
+            print("  + smplx/SMPLX_NEUTRAL.npz")
+        else:
+            # Fallback: convert a chumpy .pkl copy (e.g. SMPLX_NEUTRAL.pkl)
+            pkls = glob.glob("/kaggle/input/**/SMPLX_NEUTRAL.pkl", recursive=True)
+            if pkls:
+                print("  No SMPLX_NEUTRAL.npz found — converting from .pkl ...")
+                if _convert_smplx_pkl_to_npz(pkls[0], smplx_npz):
+                    print("  + smplx/SMPLX_NEUTRAL.npz (converted)")
+            else:
+                print(
+                    "WARNING: no SMPLX body model found in attached datasets!\n"
+                    "  Add SMPLX_NEUTRAL.npz (preferred) or SMPLX_NEUTRAL.pkl from\n"
+                    "  models_smplx_v1_1 to a PRIVATE Kaggle dataset and attach it."
+                )
     else:
+        print("  = smplx/SMPLX_NEUTRAL.npz (already present)")
+
+    smpl_pkl = os.path.join(dest, "smpl", "SMPL_NEUTRAL.pkl")
+    if not os.path.exists(smpl_pkl):
+        os.makedirs(os.path.join(dest, "smpl"), exist_ok=True)
+        hits = glob.glob("/kaggle/input/**/SMPL_NEUTRAL.pkl", recursive=True)
+        if hits:
+            shutil.copy(hits[0], smpl_pkl)
+            print("  + smpl/SMPL_NEUTRAL.pkl (overlay rendering enabled)")
+
+    if os.path.exists(smplx_npz):
         print("Body-model root:", dest)
+    else:
+        print(
+            "SMPL-X model still missing — inference will fail until a dataset\n"
+            "containing SMPLX_NEUTRAL.npz (or .pkl) is attached."
+        )
 
 
 # ---------------------------------------------------------------- 4. run
