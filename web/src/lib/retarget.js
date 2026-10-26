@@ -165,11 +165,14 @@ export function buildRetargetClip(motion, character, options) {
       t.y += opts.groundOffset
       if (opts.flipRoot) t.applyQuaternion(FLIP)
 
-      // world position -> hips local position (relative to parent bind transform)
+      // world position -> hips local position (relative to parent bind transform,
+      // dividing out any scale the parent node carries, e.g. Armature 0.01)
       const pBone = character.parentOf[hipsBone]
-      const pw = pBone && bind[pBone] ? bind[pBone].restWorldQuat : IDENTITY
-      const pp = pBone && bind[pBone] ? bind[pBone].restWorldPos : new THREE.Vector3()
+      const pBind = pBone && bind[pBone] ? bind[pBone] : null
+      const pw = pBind ? pBind.restWorldQuat : IDENTITY
+      const pp = pBind ? pBind.restWorldPos : new THREE.Vector3()
       const local = t.clone().sub(pp).applyQuaternion(pw.clone().invert())
+      if (pBind && Math.abs(pBind.scale - 1) > 1e-9) local.divideScalar(pBind.scale)
       hipLocalPositions.push(local)
     }
   }

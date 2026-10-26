@@ -36,6 +36,8 @@ export async function loadCharacterFile(file) {
     throw new Error('Unsupported character file. Use .glb, .gltf or .fbx')
   }
 
+  dedupeBones(object3D)
+
   const info = extractSkeleton(object3D)
   if (!info.bones.length) {
     throw new Error('No skeleton found in this model (no SkinnedMesh with bones).')
@@ -49,6 +51,34 @@ export async function loadCharacterFile(file) {
     )
   }
   return { object3D, ...info, fileName: file.name }
+}
+
+/**
+ * Mixamo FBXs often contain every bone TWICE (an FBXLoader artifact). Only
+ * one copy is actually skinned; if we animate by name, THREE.PropertyBinding
+ * may find the non-skinned twin first and the mesh would never move. Remove
+ * duplicates, keeping the skinned instances.
+ */
+function dedupeBones(object3D) {
+  const usedNodes = new Map() // name -> first skinned instance
+  object3D.traverse((o) => {
+    if (o.isSkinnedMesh && o.skeleton) {
+      o.skeleton.bones.forEach((b) => {
+        if (!usedNodes.has(b.name)) usedNodes.set(b.name, b)
+      })
+    }
+  })
+  if (!usedNodes.size) return
+  const toRemove = []
+  object3D.traverse((o) => {
+    if (o.isBone && usedNodes.has(o.name) && usedNodes.get(o.name) !== o) {
+      toRemove.push(o)
+    }
+  })
+  toRemove.forEach((o) => o.parent?.remove(o))
+  if (toRemove.length) {
+    console.info(`[vid2rig] removed ${toRemove.length} duplicate (non-skinned) bones`)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -146,6 +176,22 @@ export const SMPL_INDEX = Object.fromEntries(
 export function extractSkeleton(object3D) {
   object3D.updateMatrixWorld(true)
 
+  // --- Unit-scale normalization -------------------------------------------
+  // Mixamo FBX quirk: geometry is in centimeters with UnitScaleFactor=1, so
+  // three.js loads it ~100x too big (a 1.8m person reads as ~180 units).
+  // Normalize once at load so bind data, retargeting and exports are metric.
+  const bbox = new THREE.Box3().setFromObject(object3D)
+  const rawHeight = bbox.max.y - bbox.min.y
+  let unitScale = 1
+  if (rawHeight > 1000) unitScale = 0.001 // millimeter data
+  else if (rawHeight > 10) unitScale = 0.01 // centimeter data (Mixamo)
+  else if (rawHeight > 0 && rawHeight < 0.2) unitScale = 10 // decimeter-ish edge case
+  if (unitScale !== 1) {
+    object3D.scale.multiplyScalar(unitScale)
+    object3D.updateMatrixWorld(true)
+  }
+  const modelHeightM = rawHeight * unitScale
+
   // Collect bones actually used by skinned meshes
   const used = new Set()
   object3D.traverse((o) => {
@@ -154,34 +200,56 @@ export function extractSkeleton(object3D) {
     }
   })
 
+  // Skinned instances take priority over any same-named leftovers
   const bones = []
   const byName = new Map()
+  used.forEach((b) => {
+    if (!byName.has(b.name)) {
+      byName.set(b.name, b)
+      bones.push(b)
+    }
+  })
   object3D.traverse((o) => {
-    if (o.isBone || used.has(o)) {
-      if (!byName.has(o.name)) {
-        byName.set(o.name, o)
-        bones.push(o)
-      }
+    if ((o.isBone || used.has(o)) && !byName.has(o.name)) {
+      byName.set(o.name, o)
+      bones.push(o)
     }
   })
 
-  // Fall back: some exports use plain Object3D nodes as bones
-  if (!bones.length) {
-    object3D.traverse((o) => {
-      if (o.children.length || o.parent) byName.set(o.name, o)
-    })
-  }
-
-  const parentOf = {}
+  // Ensure every bone's parent node has a name (anon wrappers get one), so
+  // the retarget math can find their scale/transform via bind data.
+  let anonCounter = 0
   bones.forEach((b) => {
-    const p = b.parent
-    parentOf[b.name] = p && byName.has(p.name) && p !== b ? p.name : null
+    if (b.parent && !b.parent.name) b.parent.name = `__anon_${anonCounter++}`
   })
 
-  // Skeleton root: bone whose parent is not itself a bone
+  const parentOf = {}
+  const ancestors = new Set()
+  bones.forEach((b) => {
+    const p = b.parent
+    if (p && p !== b) {
+      byName.set(p.name, p)
+      if (!p.isBone) ancestors.add(p.name)
+      parentOf[b.name] = p.name
+    } else {
+      parentOf[b.name] = null
+    }
+    // record all ancestor nodes of every bone (Armature/RootNode wrappers)
+    let a = p
+    while (a) {
+      if (!byName.has(a.name)) {
+        byName.set(a.name, a)
+        ancestors.add(a.name)
+      }
+      a = a.parent
+    }
+  })
+
+  // Skeleton root: top-most bone
   let rootBone = bones[0] || null
   for (const b of bones) {
-    if (!parentOf[b.name]) {
+    const p = b.parent
+    if (!p || !p.isBone) {
       rootBone = b
       break
     }
@@ -192,15 +260,17 @@ export function extractSkeleton(object3D) {
   const pos = new THREE.Vector3()
   const quat = new THREE.Quaternion()
   const scl = new THREE.Vector3()
-  bones.forEach((b) => {
-    m.copy(b.matrixWorld)
+
+  byName.forEach((o, name) => {
+    m.copy(o.matrixWorld)
     m.decompose(pos, quat, scl)
     quat.normalize()
-    bind[b.name] = {
+    bind[name] = {
       restWorldQuat: quat.clone(),
       restWorldPos: pos.clone(),
-      localQuat: b.quaternion.clone(),
-      localPos: b.position.clone(),
+      localQuat: o.quaternion.clone(),
+      localPos: o.position.clone(),
+      scale: scl.x, // world scale carried by this node (e.g. Armature 0.01)
     }
   })
 
@@ -209,6 +279,8 @@ export function extractSkeleton(object3D) {
     parentOf,
     rootBone,
     bind,
+    modelHeightM,
+    unitScaleApplied: unitScale,
     // Lowest common ancestor of the skeleton root and all skinned meshes —
     // the correct subtree root for exporting a self-contained character GLB.
     exportRoot: (() => {
@@ -217,15 +289,16 @@ export function extractSkeleton(object3D) {
         if (o.isSkinnedMesh && o.skeleton) skinned.push(o)
       })
       if (!rootBone) return object3D
+      // start ABOVE the skeleton root so wrapper scale nodes are included
       const chain = []
-      let n = rootBone
+      let n = rootBone.parent
       while (n) {
         chain.push(n)
         n = n.parent
       }
       const isAncestorOfAll = (candidate) =>
-        skinned.every((m) => {
-          let p = m
+        skinned.every((mesh) => {
+          let p = mesh
           while (p) {
             if (p === candidate) return true
             p = p.parent
