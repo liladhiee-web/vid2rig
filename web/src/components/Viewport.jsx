@@ -2,6 +2,32 @@ import React, { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 
+/**
+ * Green/black look for the default Mixamo X Bot:
+ * dark hull with glowing green joints/segments.
+ */
+function applyDefaultTheme(model) {
+  const jointMat = new THREE.MeshStandardMaterial({
+    color: 0x00e676,
+    emissive: 0x0a4d2a,
+    emissiveIntensity: 1.2,
+    roughness: 0.35,
+    metalness: 0.25,
+  })
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: 0x11150f,
+    emissive: 0x06140b,
+    emissiveIntensity: 0.6,
+    roughness: 0.55,
+    metalness: 0.35,
+  })
+  model.traverse((o) => {
+    if (o.isMesh) {
+      o.material = /joints|segment/i.test(o.name || '') ? jointMat : bodyMat
+    }
+  })
+}
+
 export default function Viewport({ character, clip, playing, time, onTimeUpdate, duration }) {
   const mountRef = useRef(null)
   const stateRef = useRef({})
@@ -16,7 +42,8 @@ export default function Viewport({ character, clip, playing, time, onTimeUpdate,
     mount.appendChild(renderer.domElement)
 
     const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0x0b0f14)
+    scene.background = new THREE.Color(0x030604)
+    scene.fog = new THREE.Fog(0x030604, 18, 40)
 
     const camera = new THREE.PerspectiveCamera(45, mount.clientWidth / renderer.domElement.height, 0.05, 200)
     camera.position.set(2.5, 1.6, 4)
@@ -25,8 +52,8 @@ export default function Viewport({ character, clip, playing, time, onTimeUpdate,
     controls.target.set(0, 1, 0)
     controls.update()
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 2.2))
-    const dir = new THREE.DirectionalLight(0xffffff, 2.4)
+    scene.add(new THREE.HemisphereLight(0x9fe8c4, 0x0a140d, 2.2))
+    const dir = new THREE.DirectionalLight(0xd4ffe6, 2.4)
     dir.position.set(3, 6, 4)
     dir.castShadow = true
     dir.shadow.camera.far = 20
@@ -34,11 +61,18 @@ export default function Viewport({ character, clip, playing, time, onTimeUpdate,
     dir.shadow.camera.right = dir.shadow.camera.top = 6
     scene.add(dir)
 
-    const grid = new THREE.GridHelper(20, 40, 0x334455, 0x1d2632)
+    const rim = new THREE.DirectionalLight(0x00e676, 1.1)
+    rim.position.set(-4, 3, -5)
+    scene.add(rim)
+
+    const grid = new THREE.GridHelper(20, 40, 0x00e676, 0x12281b)
+    grid.material.transparent = true
+    grid.material.opacity = 0.35
     scene.add(grid)
 
     // add character (keep bind pose)
     const model = character.object3D
+    if (character.isDefault) applyDefaultTheme(model)
     scene.add(model)
 
     // mixer setup

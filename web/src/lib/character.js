@@ -6,7 +6,6 @@ import { FBXLoader } from 'three/addons/loaders/FBXLoader.js'
 export async function loadCharacterFile(file) {
   const name = file.name.toLowerCase()
   const buffer = await file.arrayBuffer()
-  const loaderOpts = {}
   let object3D
 
   if (name.endsWith('.glb') || name.endsWith('.gltf')) {
@@ -41,8 +40,99 @@ export async function loadCharacterFile(file) {
   if (!info.bones.length) {
     throw new Error('No skeleton found in this model (no SkinnedMesh with bones).')
   }
+  const { missing } = mixamoMapping(info.bones)
+  if (missing.length) {
+    throw new Error(
+      `Not a Mixamo-rigged character (missing bones: ${missing.join(', ')}). ` +
+        'vid2rig needs characters rigged/downloaded from Mixamo with the standard ' +
+        'mixamorig:* skeleton ("Download FBX / T-pose / with skin").',
+    )
+  }
   return { object3D, ...info, fileName: file.name }
 }
+
+// ---------------------------------------------------------------------------
+// Mixamo rig support
+//
+// vid2rig targets Mixamo "Download FBX (with skin)" characters — they all use
+// the standard mixamorig:* skeleton, so the SMPL mapping is FIXED (no manual
+// mapping needed) and can be validated on load.
+// ---------------------------------------------------------------------------
+
+/** Standard SMPL-joint → Mixamo-bone table (Mixamo names minus the prefix). */
+export const SMPL_TO_MIXAMO = {
+  pelvis: 'Hips',
+  spine1: 'Spine',
+  spine2: 'Spine1',
+  spine3: 'Spine2',
+  neck: 'Neck',
+  head: 'Head',
+  left_shoulder: 'LeftShoulder', // SMPL "shoulder" == Mixamo clavicle bone
+  right_shoulder: 'RightShoulder',
+  left_elbow: 'LeftArm',
+  right_elbow: 'RightArm',
+  left_wrist: 'LeftForeArm',
+  right_wrist: 'RightForeArm',
+  left_hip: 'LeftUpLeg',
+  right_hip: 'RightUpLeg',
+  left_knee: 'LeftLeg',
+  right_knee: 'RightLeg',
+  left_ankle: 'LeftFoot',
+  right_ankle: 'RightFoot',
+  left_foot: 'LeftToeBase',
+  right_foot: 'RightToeBase',
+  // SMPL left/right_collar + hand end joints have no separate Mixamo bones
+}
+
+/** Required Mixamo bones for a valid humanoid retarget. */
+const REQUIRED_MIXAMO = [
+  'Hips', 'Spine', 'Spine1', 'Spine2', 'Neck', 'Head',
+  'LeftShoulder', 'RightShoulder', 'LeftArm', 'RightArm',
+  'LeftForeArm', 'RightForeArm', 'LeftUpLeg', 'RightUpLeg',
+  'LeftLeg', 'RightLeg', 'LeftFoot', 'RightFoot',
+]
+
+/** True if the bone set matches the Mixamo mixamorig:* skeleton. */
+export function detectMixamo(bones) {
+  const names = new Set(bones.map(stripMixamoPrefix))
+  return REQUIRED_MIXAMO.every((n) => names.has(n.toLowerCase()))
+}
+
+function stripMixamoPrefix(name) {
+  return name.toLowerCase().replace(/^mixamorig[:_]?/, '')
+}
+
+/**
+ * Build the SMPL-joint-index → bone-name mapping for a Mixamo skeleton.
+ * @returns {{ mapping: Object, missing: string[] }}
+ */
+export function mixamoMapping(bones) {
+  const byName = new Map(bones.map((b) => [stripMixamoPrefix(b.name), b.name]))
+  const mapping = {}
+  const missing = []
+  for (const [joint, mixamoName] of Object.entries(SMPL_TO_MIXAMO)) {
+    const bone = byName.get(mixamoName.toLowerCase())
+    if (bone) mapping[joint] = bone
+    else if (REQUIRED_MIXAMO.includes(mixamoName)) missing.push(mixamoName)
+  }
+  // Convert joint names to indexes used by the retargeter
+  const indexMapping = {}
+  for (const [joint, bone] of Object.entries(mapping)) {
+    const idx = SMPL_INDEX[joint]
+    if (idx !== undefined) indexMapping[idx] = bone
+  }
+  return { mapping: indexMapping, missing }
+}
+
+export const SMPL_INDEX = Object.fromEntries(
+  [
+    'pelvis', 'left_hip', 'right_hip', 'spine1', 'left_knee', 'right_knee',
+    'spine2', 'left_ankle', 'right_ankle', 'spine3', 'left_foot', 'right_foot',
+    'neck', 'left_collar', 'right_collar', 'head', 'left_shoulder',
+    'right_shoulder', 'left_elbow', 'right_elbow', 'left_wrist', 'right_wrist',
+    'left_hand', 'right_hand',
+  ].map((n, i) => [n, i]),
+)
 
 /**
  * Walks the scene, finds skinned meshes, and collects:
@@ -119,5 +209,33 @@ export function extractSkeleton(object3D) {
     parentOf,
     rootBone,
     bind,
+    // Lowest common ancestor of the skeleton root and all skinned meshes —
+    // the correct subtree root for exporting a self-contained character GLB.
+    exportRoot: (() => {
+      const skinned = []
+      object3D.traverse((o) => {
+        if (o.isSkinnedMesh && o.skeleton) skinned.push(o)
+      })
+      if (!rootBone) return object3D
+      const chain = []
+      let n = rootBone
+      while (n) {
+        chain.push(n)
+        n = n.parent
+      }
+      const isAncestorOfAll = (candidate) =>
+        skinned.every((m) => {
+          let p = m
+          while (p) {
+            if (p === candidate) return true
+            p = p.parent
+          }
+          return false
+        })
+      for (const node of chain) {
+        if (isAncestorOfAll(node)) return node
+      }
+      return object3D
+    })(),
   }
 }

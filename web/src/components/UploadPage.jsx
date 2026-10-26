@@ -1,9 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useState } from 'react'
 import { convertFbxOnServer } from '../api.js'
 
 export function Dropzone({ icon, title, hint, accept, onFile, fileName, disabled }) {
   const [dragover, setDragover] = useState(false)
-  const inputRef = useRef(null)
+  const inputRef = React.useRef(null)
 
   return (
     <div
@@ -41,14 +41,14 @@ export function Dropzone({ icon, title, hint, accept, onFile, fileName, disabled
   )
 }
 
-export default function UploadPage({ character, onCharacter, onProcess, job, health }) {
+export default function UploadPage({ character, mixamoReady, onCharacter, onProcess, job, health }) {
   const [videoFile, setVideoFile] = useState(null)
   const [uploadPct, setUploadPct] = useState(0)
   const [error, setError] = useState('')
   const [legacyFbx, setLegacyFbx] = useState(null)
   const [converting, setConverting] = useState(false)
 
-  const canProcess = videoFile && !job
+  const canProcess = videoFile && !job && mixamoReady
 
   const start = async () => {
     setError('')
@@ -91,20 +91,40 @@ export default function UploadPage({ character, onCharacter, onProcess, job, hea
           <Dropzone
             icon="🎬"
             title="Motion video"
-            hint="MP4/WebM/MOV — a single person, full body in frame"
+            hint="MP4/WebM/MOV — one person, full body in frame"
             accept="video/*"
             onFile={setVideoFile}
             fileName={videoFile?.name}
           />
           <Dropzone
             icon="🧍"
-            title="Rigged character"
-            hint=".glb / .gltf / .fbx — rigged humanoid (skinned mesh)"
+            title={character?.isDefault ? 'Character — Mixamo X Bot (default)' : 'Replace with your own Mixamo character'}
+            hint={
+              character?.isDefault
+                ? 'Default rigged character loaded — drop another Mixamo FBX/GLB to swap it'
+                : '.glb / .fbx — must be Mixamo-rigged (mixamorig:* skeleton, with skin)'
+            }
             accept=".glb,.gltf,.fbx"
             onFile={loadCharacter}
             fileName={character?.fileName}
           />
         </div>
+
+        <div className="char-status">
+          {character ? (
+            mixamoReady ? (
+              <span className="healthy">
+                ✓ {character.fileName} — Mixamo armature detected ({character.bones.length} bones)
+                {character.isDefault ? ' · default X Bot' : ''}
+              </span>
+            ) : (
+              <span className="bad">✗ {character.fileName} — Mixamo skeleton not detected</span>
+            )
+          ) : (
+            <span className="statusline">Loading default character…</span>
+          )}
+        </div>
+
         {legacyFbx && (
           <div className="options">
             <button className="secondary" disabled={converting} onClick={convertLegacyFbx}>
@@ -112,20 +132,11 @@ export default function UploadPage({ character, onCharacter, onProcess, job, hea
             </button>
           </div>
         )}
+
         <div className="options" style={{ marginTop: 16 }}>
-          <button
-            className="primary"
-            disabled={!canProcess}
-            onClick={start}
-          >
+          <button className="primary" disabled={!canProcess} onClick={start}>
             {job ? 'Processing…' : 'Analyze video →'}
           </button>
-          {character && (
-            <span className="statusline">
-              Character loaded: <b>{character.bones.length}</b> bones, root “
-              {character.rootBone?.name}”
-            </span>
-          )}
         </div>
         {uploadPct > 0 && uploadPct < 1 && (
           <div className="progressbar">
@@ -133,6 +144,9 @@ export default function UploadPage({ character, onCharacter, onProcess, job, hea
           </div>
         )}
         {error && <div className="statusline error">{error}</div>}
+        {!canProcess && videoFile && !mixamoReady && !character && (
+          <div className="statusline">Waiting for the default character to load…</div>
+        )}
       </div>
 
       <div className="panel">

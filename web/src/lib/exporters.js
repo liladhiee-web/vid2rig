@@ -5,8 +5,9 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
 export function exportGLB(character, clips, fileName = 'vid2rig.glb') {
   return new Promise((resolve, reject) => {
     const exporter = new GLTFExporter()
+    const root = character.exportRoot || character.object3D
     exporter.parse(
-      character.rootBone, // export the skeleton subtree with skinned meshes
+      root,
       (result) => {
         const blob = new Blob([result], { type: 'model/gltf-binary' })
         download(blob, fileName)

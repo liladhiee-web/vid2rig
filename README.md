@@ -103,6 +103,15 @@ Notes:
 - Node.js 18+ (frontend build only)
 - ffmpeg available on the server machine (bundled on Kaggle)
 
+## Character requirements (v1)
+
+Characters must be **rigged with Mixamo's standard skeleton** — i.e. downloaded
+from [mixamo.com](https://www.mixamo.com/) as **"FBX → T-pose → With Skin"**
+(the `mixamorig:*` skeleton). The app auto-detects the armature and validates it
+on load; the default preview character is Mixamo's **X Bot** (`web/public/X Bot.fbx`,
+shipped for convenience — replace with your own Mixamo download for production use).
+Legacy FBX 6.1 files (rare) get a one-click server-side conversion via assimp.
+
 ## License & attribution
 
 - Motion recovery: [GVHMR](https://github.com/zju3dv/GVHMR) (check its license) and
