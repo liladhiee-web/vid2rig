@@ -92,6 +92,12 @@ def install_deps(repo_dir):
         "fastapi>=0.110", "uvicorn[standard]>=0.29", "python-multipart>=0.0.9",
         "numpy>=1.26", "opencv-python-headless>=4.9",
     )
+    # assimp = only open-source reader for legacy FBX 6.1 (used by the
+    # /api/convert_fbx fallback when three.js/Blender can't parse a file)
+    step("Installing assimp (legacy-FBX conversion helper)")
+    subprocess.run(
+        ["apt-get", "install", "-y", "-q", "assimp-utils"], check=False
+    )
 
     # chumpy is legacy (setup.py uses distutils + pip internals) and cannot
     # build under PEP-517 isolation on Python 3.12+/numpy2. Pre-install it

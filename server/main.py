@@ -15,6 +15,9 @@ Run:  uvicorn server.main:app --host 0.0.0.0 --port 8000
 import asyncio
 import json
 import os
+import shutil
+import subprocess
+import tempfile
 import time
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -115,6 +118,53 @@ def job_overlay(job_id: str):
     if getattr(job, "overlay_path", "") and os.path.exists(job.overlay_path):
         return FileResponse(job.overlay_path, media_type="video/mp4")
     raise HTTPException(404, "No overlay available")
+
+
+# ---------------------------------------------------------------- FBX conversion
+
+@app.post("/api/convert_fbx")
+async def convert_fbx(file: UploadFile = File(...)):
+    """Convert legacy FBX (e.g. version 6.1) to GLB server-side via assimp.
+
+    three.js (and Blender) only read FBX 7.x; assimp reads 6.1 binary/ASCII.
+    Returns a GLB the browser then loads like any other character.
+    """
+    from starlette.background import BackgroundTask
+
+    tmp = tempfile.mkdtemp(prefix="fbxconv_")
+    src = os.path.join(tmp, "input.fbx")
+    out = os.path.join(tmp, "converted.glb")
+    try:
+        with open(src, "wb") as f:
+            f.write(await file.read())
+        try:
+            r = subprocess.run(
+                ["assimp", "export", src, out],
+                capture_output=True, text=True, timeout=180,
+            )
+        except FileNotFoundError:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise HTTPException(
+                501,
+                "Server-side FBX conversion unavailable: 'assimp' is not installed "
+                "(Kaggle bootstrap installs it; locally: apt install assimp-utils "
+                "or use the Autodesk FBX Converter / FBX2glTF).",
+            )
+        if r.returncode != 0 or not os.path.exists(out):
+            shutil.rmtree(tmp, ignore_errors=True)
+            detail = (r.stderr or r.stdout or "unknown error")[-400:]
+            raise HTTPException(422, f"FBX conversion failed: {detail}")
+        return FileResponse(
+            out,
+            media_type="model/gltf-binary",
+            filename="converted.glb",
+            background=BackgroundTask(shutil.rmtree, tmp, True),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise HTTPException(500, f"Conversion error: {e}")
 
 
 # ---------------------------------------------------------------- frontend

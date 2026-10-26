@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { convertFbxOnServer } from '../api.js'
 
 export function Dropzone({ icon, title, hint, accept, onFile, fileName, disabled }) {
   const [dragover, setDragover] = useState(false)
@@ -44,6 +45,8 @@ export default function UploadPage({ character, onCharacter, onProcess, job, hea
   const [videoFile, setVideoFile] = useState(null)
   const [uploadPct, setUploadPct] = useState(0)
   const [error, setError] = useState('')
+  const [legacyFbx, setLegacyFbx] = useState(null)
+  const [converting, setConverting] = useState(false)
 
   const canProcess = videoFile && !job
 
@@ -54,6 +57,30 @@ export default function UploadPage({ character, onCharacter, onProcess, job, hea
     } catch (e) {
       setError(e.message)
     }
+  }
+
+  const loadCharacter = async (f) => {
+    setError('')
+    setLegacyFbx(null)
+    try {
+      await onCharacter(f)
+    } catch (e) {
+      setError(e.message)
+      if (/FBX is version/.test(e.message)) setLegacyFbx(f)
+    }
+  }
+
+  const convertLegacyFbx = async () => {
+    setConverting(true)
+    setError('')
+    try {
+      const converted = await convertFbxOnServer(legacyFbx)
+      await onCharacter(converted)
+      setLegacyFbx(null)
+    } catch (e) {
+      setError(e.message)
+    }
+    setConverting(false)
   }
 
   return (
@@ -74,17 +101,17 @@ export default function UploadPage({ character, onCharacter, onProcess, job, hea
             title="Rigged character"
             hint=".glb / .gltf / .fbx — rigged humanoid (skinned mesh)"
             accept=".glb,.gltf,.fbx"
-            onFile={async (f) => {
-              setError('')
-              try {
-                await onCharacter(f)
-              } catch (e) {
-                setError(e.message)
-              }
-            }}
+            onFile={loadCharacter}
             fileName={character?.fileName}
           />
         </div>
+        {legacyFbx && (
+          <div className="options">
+            <button className="secondary" disabled={converting} onClick={convertLegacyFbx}>
+              {converting ? 'Converting on server…' : `🔧 Convert "${legacyFbx.name}" on the server (assimp → GLB)`}
+            </button>
+          </div>
+        )}
         <div className="options" style={{ marginTop: 16 }}>
           <button
             className="primary"

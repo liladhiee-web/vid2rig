@@ -71,6 +71,20 @@ export async function fetchResult(jobId) {
   return res.json()
 }
 
+/** Convert a legacy FBX (e.g. version 6.1) server-side via assimp -> GLB file. */
+export async function convertFbxOnServer(file) {
+  const form = new FormData()
+  form.append('file', file)
+  const res = await fetch('/api/convert_fbx', { method: 'POST', body: form })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    throw new Error(body.detail || `Conversion failed (HTTP ${res.status})`)
+  }
+  const blob = await res.blob()
+  const name = file.name.replace(/\.fbx$/i, '') + '.glb'
+  return new File([blob], name, { type: 'model/gltf-binary' })
+}
+
 export function overlayUrl(jobId) {
   return `/api/jobs/${jobId}/overlay`
 }
