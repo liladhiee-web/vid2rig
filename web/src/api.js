@@ -33,17 +33,19 @@ export function uploadVideo(file, onProgress) {
 
 export function subscribeJobEvents(jobId, onEvent, onDone, onError) {
   const es = new EventSource(`/api/jobs/${jobId}/events`)
+  let finished = false
   es.onmessage = (e) => {
     const data = JSON.parse(e.data)
     onEvent(data)
     if (data.final) {
+      finished = true
       es.close()
       onDone(data)
     }
   }
   es.onerror = () => {
     es.close()
-    onError?.(new Error('Connection to job lost'))
+    if (!finished) onError?.(new Error('Connection to job lost'))
   }
   return () => es.close()
 }

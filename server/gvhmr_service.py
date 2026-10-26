@@ -159,11 +159,31 @@ def _extract_motion(result, fps: float) -> dict:
         )
 
     global_orient = get("global_orient").reshape(-1, 3)
-    body_pose = get("body_pose").reshape(-1, 69)
+    num_frames = len(global_orient)
+
+    # body_pose: SMPL joints 1..23 = 69 params/frame. GVHMR does not estimate
+    # the two hand-end joints, so its output can be 63 (21 joints) per frame —
+    # accept any multiple of 3 and zero-pad the missing trailing joints.
+    bp = get("body_pose")
+    per_frame = (bp.size // num_frames) if num_frames else 0
+    if per_frame % 3 != 0:
+        raise ValueError(
+            f"Unexpected body_pose size {bp.size} for {num_frames} frames "
+            f"({per_frame} per frame — not a multiple of 3)"
+        )
+    bp = bp.reshape(num_frames, per_frame)
+    if per_frame < 69:
+        padded = np.zeros((num_frames, 69), dtype=bp.dtype)
+        padded[:, :per_frame] = bp
+        bp = padded
+    elif per_frame > 69:
+        bp = bp[:, :69]
+    body_pose = bp
+
     betas = get("betas").reshape(-1)[:10] if get("betas").size >= 10 else get("betas")
     transl = get("transl").reshape(-1, 3)
 
-    num_frames = min(len(global_orient), len(body_pose), len(transl))
+    num_frames = min(num_frames, len(body_pose), len(transl))
     return {
         "fps": fps,
         "num_frames": int(num_frames),
