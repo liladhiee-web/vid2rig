@@ -1,0 +1,10 @@
+# Core server
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+numpy>=1.26
+opencv-python-headless>=4.9
+
+# GVHMR (install the CUDA extra matching your driver, e.g. gvhmr[preproc,cu124])
+# On Kaggle, kaggle/bootstrap.py picks the right extra automatically.
+gvhmr[preproc]>=1.6

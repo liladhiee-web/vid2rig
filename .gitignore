@@ -1,0 +1,12 @@
+node_modules/
+dist/
+__pycache__/
+*.pyc
+jobs/
+.venv/
+*.ckpt
+*.pkl
+*.npz
+models_smplx_v1_1/
+smpl/
+.DS_Store
