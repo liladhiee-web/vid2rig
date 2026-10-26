@@ -16,10 +16,14 @@ export async function loadCharacterFile(file) {
     )
     object3D = gltf.scene
   } else if (name.endsWith('.fbx')) {
+    // NOTE: FBXLoader.parse() is synchronous (returns the scene directly),
+    // unlike GLTFLoader.parse() which uses callbacks.
     const loader = new FBXLoader()
-    object3D = await new Promise((res, rej) =>
-      loader.parse(buffer, '', res, rej),
-    )
+    try {
+      object3D = loader.parse(buffer, '')
+    } catch (e) {
+      throw new Error(`FBX parse failed: ${e?.message || e}`)
+    }
   } else {
     throw new Error('Unsupported character file. Use .glb, .gltf or .fbx')
   }
