@@ -16,11 +16,14 @@
 - **Lag-Free 60 FPS Render Pipeline:**
   - Optimized canvas backing store and pre-allocated vectors to eliminate GC pauses.
   - Smooth 3D playback of solved GVHMR motion.
+- **In-Place Animation (Game Dev Mode):** One-click toggle locking horizontal root translation (X/Z=0) at the origin while preserving vertical hip bouncing/crouching. Ready for Unity, Unreal Engine 5, Godot, and Blender character controllers and BlendTrees.
+- **Static Camera (No Camera Moves):** Studio tripod camera mode with zero automatic panning or following, keeping the view stationary while characters animate.
 - **Dual Export Formats (GLB & BVH):**
-  - **↓ GLB:** Skinned 3D character mesh + baked keyframe animation.
+  - **↓ GLB:** Skinned 3D character mesh + baked keyframe animation (Root Motion or In-Place).
   - **↓ BVH:** Industry-standard Biovision Hierarchy motion capture file directly importable into Blender (calibrated to 1 unit = 1 meter), Unreal Engine 5, Maya, MotionBuilder, Daz3D, and Cascadeur.
 - **Kaggle Free GPU + Cloudflare Tunnel:**
   - One-click Jupyter notebook (`kaggle_vid2rig.ipynb`) to run both the GVHMR GPU solver and web studio on Kaggle's free T4/P100 GPUs with an automated HTTPS Cloudflare quick tunnel.
+  - Zero-timeout async job queue immune to Cloudflare 125-second 524 timeouts.
 
 ---
 

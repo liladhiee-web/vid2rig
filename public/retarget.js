@@ -446,8 +446,9 @@ export function blendSnapshots(qa, pa, qb, pb, a, out) {
   return out;
 }
 
-/** Bake a Track into a THREE.AnimationClip (local quats + hips local position). */
-export function trackToClip(rig, track, name) {
+/** Bake a Track into a THREE.AnimationClip (local quats + hips local position). Supports inPlace mode for game engines. */
+export function trackToClip(rig, track, name, options = {}) {
+  const inPlace = !!options.inPlace;
   const times = Float32Array.from(track.times.map((t) => t - track.times[0]));
   const tracks = rig.order.map((bone, bi) => {
     const v = new Float32Array(times.length * 4);
@@ -458,7 +459,16 @@ export function trackToClip(rig, track, name) {
   const parentInv = new THREE.Matrix4();
   rig.reset();
   parentInv.copy(rig.hips.parent.matrixWorld).invert();
-  track.p.forEach((p, f) => _v1.fromArray(p).applyMatrix4(parentInv).toArray(pos, f * 3));
+  const restWp = rig.rest.Hips?.wp;
+  track.p.forEach((p, f) => {
+    const pt = _v1.fromArray(p);
+    if (inPlace && restWp) {
+      // In-Place (Game Dev): Lock horizontal root translation (X/Z) to rest pose, preserve vertical Y
+      pt.x = restWp.x;
+      pt.z = restWp.z;
+    }
+    pt.applyMatrix4(parentInv).toArray(pos, f * 3);
+  });
   tracks.push(new THREE.VectorKeyframeTrack(`${rig.hips.name}.position`, times, pos));
   return new THREE.AnimationClip(name, times[times.length - 1] || 0, tracks);
 }

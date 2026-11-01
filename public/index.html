@@ -332,6 +332,7 @@
       <span class="pill ok" id="pill-engine">ENGINE: GVHMR (MAIN)</span>
       <span class="pill" id="pill-hq">gvhmr worker…</span>
       <span class="pill" id="pill-pose">mediapipe: optional</span>
+      <span class="pill" id="pill-inplace" style="display:none; background:rgba(0,255,136,0.18); color:var(--primary); border:1px solid var(--primary);">IN-PLACE (GAME DEV)</span>
       <span class="pill" id="pill-rig">character…</span>
     </div>
 
@@ -381,6 +382,15 @@
       <label class="check"><input type="checkbox" id="hands" checked /><span>track fingers<small>WiLoR finger & wrist solver (15 joints/hand)</small></span></label>
       <label class="check"><input type="checkbox" id="rootMotion" checked /><span>root motion<small>Extract 3D hip translation across ground plane</small></span></label>
 
+      <!-- Game Dev: In-Place Animation Mode -->
+      <label class="check" style="background: rgba(0, 255, 136, 0.06); padding: 7px 9px; border-radius: 4px; border: 1px solid rgba(0, 255, 136, 0.28); margin-top: 4px;">
+        <input type="checkbox" id="inPlace" />
+        <span>
+          <b style="color: var(--primary);">In-Place Motion (Game Dev Mode)</b>
+          <small>Lock horizontal root X/Z at (0,0) for Unity, Unreal & Godot State Machines</small>
+        </span>
+      </label>
+
       <!-- Optional MediaPipe Preview / Fallback -->
       <div class="opt-engine-box">
         <label class="title-sub">Optional In-Browser Preview</label>
@@ -402,6 +412,10 @@
       <div class="row"><span>rig</span>
         <select id="character"><option value="xbot">x bot</option><option value="michelle">michelle</option><option value="soldier">soldier</option></select></div>
       <label class="check"><input type="checkbox" id="swap" /><span>swap character every loop<small>X Bot → Michelle → Soldier, cycling on loop</small></span></label>
+      <label class="check" style="background: rgba(0, 255, 136, 0.04); padding: 6px 8px; border-radius: 4px; border: 1px solid rgba(0, 255, 136, 0.18);">
+        <input type="checkbox" id="staticCamera" checked />
+        <span><b>Static Camera (No Camera Moves)</b><small>Fixed studio tripod camera without automatic panning or tracking</small></span>
+      </label>
       <label class="check"><input type="checkbox" id="cinematic" /><span>cinematic camera<small>Slow arc and push-in. Drag scene to orbit</small></span></label>
       <div class="btn-group">
         <button class="btn" id="btn-char">Load Mixamo FBX/GLB…</button>
@@ -411,12 +425,12 @@
 
     <!-- Export Quick Access -->
     <div class="section">
-      <label class="title">Export Formats</label>
+      <label class="title">Export Formats (Game Dev & VFX)</label>
       <div class="btn-group">
-        <button class="btn primary" id="btn-export-glb" disabled>↓ Export GLB</button>
-        <button class="btn primary" id="btn-export-bvh" disabled>↓ Export BVH</button>
+        <button class="btn primary" id="btn-export-glb" disabled>↓ Export GLB (Root Motion)</button>
+        <button class="btn primary" id="btn-export-bvh" disabled>↓ Export BVH (Root Motion)</button>
       </div>
-      <span style="font: 11px var(--mono); color: var(--ash);">GLB: 3D mesh + animated skeleton<br>BVH: Universal mocap data for Blender, Unreal, Maya</span>
+      <span style="font: 11px var(--mono); color: var(--ash);">GLB: 3D mesh + animated skeleton<br>BVH: Universal mocap data for Blender, Unreal, Unity, Godot</span>
     </div>
 
     <!-- System Log -->

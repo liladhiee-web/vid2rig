@@ -12,14 +12,15 @@ const shortName = (n) => n.replace(/^mixamorig\d*[:_]?/i, '');
  * Builds the BVH hierarchy tree definition and motion frame lines.
  * Uses metric world positions for rest offsets and Hips translation,
  * ensuring standard Blender / DCC scale (1 unit = 1 meter, character ~ 1.75m).
- *
  * @param {import('./retarget.js').Rig} rig
  * @param {import('./retarget.js').Track} track
  * @param {string} clipName
  * @param {number} scale Scale multiplier on meters (default: 1.0 for standard metric Blender units)
+ * @param {object} options Optional export parameters: { inPlace?: boolean }
  * @returns {string} BVH file content
  */
-export function buildBVH(rig, track, clipName = 'motion', scale = 1.0) {
+export function buildBVH(rig, track, clipName = 'motion', scale = 1.0, options = {}) {
+  const inPlace = !!options.inPlace;
   if (!rig || !track || !track.times.length) {
     throw new Error('Invalid rig or empty track for BVH export');
   }
@@ -182,9 +183,17 @@ export function buildBVH(rig, track, clipName = 'motion', scale = 1.0) {
     for (const item of activeBones) {
       if (item.isRoot) {
         // Hips position in world coordinates (meters)
-        lineParts.push((pWorld[0] * scale).toFixed(4));
-        lineParts.push((pWorld[1] * scale).toFixed(4));
-        lineParts.push((pWorld[2] * scale).toFixed(4));
+        let rootX = pWorld[0];
+        let rootY = pWorld[1];
+        let rootZ = pWorld[2];
+        if (inPlace) {
+          // In-Place (Game Dev): Lock horizontal root translation (X/Z) to origin rest offset
+          rootX = restOffset.x;
+          rootZ = restOffset.z;
+        }
+        lineParts.push((rootX * scale).toFixed(4));
+        lineParts.push((rootY * scale).toFixed(4));
+        lineParts.push((rootZ * scale).toFixed(4));
       }
 
       if (item.orderIdx != null && qArray) {
@@ -211,9 +220,10 @@ export function buildBVH(rig, track, clipName = 'motion', scale = 1.0) {
  * @param {import('./retarget.js').Track} track
  * @param {string} filename Base filename without extension
  * @param {number} scale Optional scale multiplier (default: 1.0 for meters, fits standard Blender grid)
+ * @param {object} options Optional export parameters: { inPlace?: boolean }
  */
-export function exportBVHFile(rig, track, filename = 'motion', scale = 1.0) {
-  const bvhContent = buildBVH(rig, track, filename, scale);
+export function exportBVHFile(rig, track, filename = 'motion', scale = 1.0, options = {}) {
+  const bvhContent = buildBVH(rig, track, filename, scale, options);
   const blob = new Blob([bvhContent], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

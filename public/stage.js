@@ -106,8 +106,8 @@ export function createStage(container) {
     m.material.opacity = 0.8 * k;
   }
 
-  // Camera: follows a focus point; optional slow cinematic arc + push-in.
-  const state = { cinematic: false, width: 1.4, inset: 0, pausedUntil: 0, t0: performance.now(), focus: new THREE.Vector3(0, 0.95, 0) };
+  // Camera: follows a focus point, stays static, or optional slow cinematic arc + push-in.
+  const state = { cinematic: false, staticCamera: true, width: 1.4, inset: 0, pausedUntil: 0, t0: performance.now(), focus: new THREE.Vector3(0, 0.95, 0) };
   controls.addEventListener('start', () => { state.pausedUntil = performance.now() + 6000; });
   /** Distance that fits a ~2.1m-tall group `state.width` meters wide into the visible area. */
   const baseDistance = () => {
@@ -132,6 +132,12 @@ export function createStage(container) {
   function fitFog() { const d = baseDistance(); scene.fog.near = d + 3; scene.fog.far = d + 20; }
 
   function update(focus) {
+    if (state.staticCamera) {
+      // Static Camera: completely locked in place, zero automatic camera panning or moving
+      controls.update();
+      renderer.render(scene, camera);
+      return;
+    }
     if (state.lock) { controls.target.copy(state.lock); controls.update(); renderer.render(scene, camera); return; }
     if (focus) state.focus.lerp(new THREE.Vector3(focus.x, 0.95, focus.z), 0.04);
     const now = performance.now();
@@ -161,7 +167,8 @@ export function createStage(container) {
 
   return {
     renderer, scene, camera, controls, update, contactShadow, removeContactShadow, placeContactShadow,
-    setCinematic(on) { state.cinematic = on; state.t0 = performance.now(); },
+    setCinematic(on) { state.cinematic = on; if (on) state.staticCamera = false; state.t0 = performance.now(); },
+    setStaticCamera(on) { state.staticCamera = !!on; if (on) state.cinematic = false; },
     /** Width in meters of what should stay in frame (solo ≈ 1.4, crowd wider). */
     /** Pin the camera target (debug close-ups); null to release. */
     setFocusLock(p) { state.lock = p ? p.clone() : null; },

@@ -28,6 +28,8 @@ const DEFAULTS = {
   useMediaPipe: false,  // MediaPipe is optional in-browser preview / client fallback
   hands: true,
   rootMotion: true,
+  inPlace: false,       // In-Place motion lock for Game Dev (locks horizontal root translation X/Z=0)
+  staticCamera: true,   // Fixed studio camera with no automatic panning or tracking
   poseModel: 'full',
   smoothing: 0.5,
   showSkel: true,
@@ -121,6 +123,7 @@ async function api(path, body) {
 
 // ---- Three.js Stage -----------------------------------------------------------
 const stage = createStage($('#stage'));
+stage.setStaticCamera(settings.staticCamera);
 const { scene } = stage;
 
 new ResizeObserver(() => {
@@ -303,8 +306,18 @@ function updateExportButtons() {
   const hasBest = !!activeTake?.best;
   const glbBtn = $('#btn-export-glb');
   const bvhBtn = $('#btn-export-bvh');
-  if (glbBtn) glbBtn.disabled = !hasBest;
-  if (bvhBtn) bvhBtn.disabled = !hasBest;
+  const inPlacePill = $('#pill-inplace');
+  if (inPlacePill) inPlacePill.style.display = settings.inPlace ? 'inline-flex' : 'none';
+
+  const modeText = settings.inPlace ? ' (In-Place)' : ' (Root Motion)';
+  if (glbBtn) {
+    glbBtn.disabled = !hasBest;
+    glbBtn.textContent = `↓ Export GLB${modeText}`;
+  }
+  if (bvhBtn) {
+    bvhBtn.disabled = !hasBest;
+    bvhBtn.textContent = `↓ Export BVH${modeText}`;
+  }
 }
 
 function renderTakes() {
@@ -808,7 +821,13 @@ function tick() {
     }
     if (snap) {
       rig.applySnapshot(snap);
-      if (current.rootOffset?.lengthSq()) {
+      if (settings.inPlace) {
+        // In-Place (Game Dev Mode): lock horizontal hips translation (X/Z) at origin rest pose, preserve vertical Y
+        const h = rig.hipsWorld();
+        h.x = rig.rest.Hips.wp.x;
+        h.z = rig.rest.Hips.wp.z;
+        rig.setHipsWorld(h);
+      } else if (current.rootOffset?.lengthSq()) {
         const h = rig.hipsWorld().add(current.rootOffset);
         rig.setHipsWorld(h);
       }
@@ -828,18 +847,20 @@ function tick() {
 }
 
 // ---- Export Handlers (GLB & BVH) ---------------------------------------------
-async function exportTakeGLB(take) {
+async function exportTakeGLB(take, options = {}) {
   const track = take.best;
   if (!track || !rig) {
     log('No motion track ready to export', 'err');
     return;
   }
+  const inPlace = options.inPlace !== undefined ? options.inPlace : !!settings.inPlace;
   const cleanName = (take.name || 'motion').replace(/[^a-z0-9_-]+/gi, '_').slice(0, 40);
-  const name = `take${take.id}_${cleanName}${take.hq ? '_hq' : '_live'}`;
-  banner(`Exporting ${name}.glb...`);
+  const suffix = inPlace ? '_inplace' : '_root';
+  const name = `take${take.id}_${cleanName}${take.hq ? '_hq' : '_live'}${suffix}`;
+  banner(`Exporting ${name}.glb${inPlace ? ' (In-Place Game Dev)' : ''}...`);
 
   try {
-    const clip = trackToClip(rig, track, name);
+    const clip = trackToClip(rig, track, name, { inPlace });
     const glb = await new GLTFExporter().parseAsync(model, { binary: true, animations: [clip] });
     const blob = new Blob([glb], { type: 'model/gltf-binary' });
     const a = document.createElement('a');
@@ -849,9 +870,9 @@ async function exportTakeGLB(take) {
     setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 
     // Save copy to ./takes
-    const q = new URLSearchParams({ name, ext: 'glb', ...(take.videoUrl?.startsWith('http') ? { source: take.videoUrl } : {}) });
+    const q = new URLSearchParams({ name, ext: 'glb', inPlace: inPlace ? '1' : '0', ...(take.videoUrl?.startsWith('http') ? { source: take.videoUrl } : {}) });
     fetch('/api/takes?' + q, { method: 'POST', body: glb }).catch(() => {});
-    log(`exported ${name}.glb`, 'ok');
+    log(`exported ${name}.glb (${inPlace ? 'in-place game dev' : 'root motion'})`, 'ok');
     banner(`Saved ${name}.glb`);
     setTimeout(() => banner(''), 2500);
   } catch (err) {
@@ -860,22 +881,24 @@ async function exportTakeGLB(take) {
   }
 }
 
-function exportTakeBVH(take) {
+function exportTakeBVH(take, options = {}) {
   const track = take.best;
   if (!track || !rig) {
     log('No motion track ready to export', 'err');
     return;
   }
+  const inPlace = options.inPlace !== undefined ? options.inPlace : !!settings.inPlace;
   const cleanName = (take.name || 'motion').replace(/[^a-z0-9_-]+/gi, '_').slice(0, 40);
-  const name = `take${take.id}_${cleanName}${take.hq ? '_hq' : '_live'}`;
-  banner(`Exporting ${name}.bvh...`);
+  const suffix = inPlace ? '_inplace' : '_root';
+  const name = `take${take.id}_${cleanName}${take.hq ? '_hq' : '_live'}${suffix}`;
+  banner(`Exporting ${name}.bvh${inPlace ? ' (In-Place Game Dev)' : ''}...`);
 
   try {
-    const bvhStr = exportBVHFile(rig, track, name);
+    const bvhStr = exportBVHFile(rig, track, name, 1.0, { inPlace });
     // Save copy to server ./takes
-    const q = new URLSearchParams({ name, ext: 'bvh', ...(take.videoUrl?.startsWith('http') ? { source: take.videoUrl } : {}) });
+    const q = new URLSearchParams({ name, ext: 'bvh', inPlace: inPlace ? '1' : '0', ...(take.videoUrl?.startsWith('http') ? { source: take.videoUrl } : {}) });
     fetch('/api/takes?' + q, { method: 'POST', body: bvhStr }).catch(() => {});
-    log(`exported ${name}.bvh (universal mocap)`, 'ok');
+    log(`exported ${name}.bvh (${inPlace ? 'in-place game dev mocap' : 'root motion mocap'})`, 'ok');
     banner(`Saved ${name}.bvh`);
     setTimeout(() => banner(''), 2500);
   } catch (err) {
@@ -955,6 +978,28 @@ bindSetting('hands', 'checked', () => {
 });
 bindSetting('rootMotion', 'checked');
 
+// In-Place Motion (Game Dev Mode) Toggle
+bindSetting('inPlace', 'checked', (on) => {
+  updateExportButtons();
+  renderTakes();
+  banner(on ? 'In-Place Mode (Game Dev): Root X/Z Locked at Origin' : 'Root Motion: 3D Trajectory Active');
+  setTimeout(() => banner(''), 2500);
+});
+
+// Static Camera (No Camera Moves) Toggle
+bindSetting('staticCamera', 'checked', (on) => {
+  stage.setStaticCamera(on);
+  if (on) {
+    settings.cinematic = false;
+    const cEl = $('#cinematic');
+    if (cEl) cEl.checked = false;
+    banner('Static Camera: Fixed Studio Tripod');
+  } else {
+    banner('Tracking Camera: Auto Focus Active');
+  }
+  setTimeout(() => banner(''), 2500);
+});
+
 // Optional MediaPipe Preview Toggle
 bindSetting('useMediaPipe', 'checked', (on) => {
   const ctrl = $('#mediapipe-controls');
@@ -971,7 +1016,14 @@ bindSetting('showSkel', 'checked');
 bindSetting('smoothing', 'value', setSmoothing);
 bindSetting('poseModel', 'value', (v) => { if (settings.useMediaPipe) initPose(v); });
 bindSetting('swap', 'checked', (on) => { if (!on && model) showOnStage(null); });
-bindSetting('cinematic', 'checked', (on) => stage.setCinematic(on));
+bindSetting('cinematic', 'checked', (on) => {
+  stage.setCinematic(on);
+  if (on) {
+    settings.staticCamera = false;
+    const sEl = $('#staticCamera');
+    if (sEl) sEl.checked = false;
+  }
+});
 bindSetting('character', 'value', (c) => {
   if (rig && CHARACTERS[c]) {
     loadCharacter(CHARACTERS[c].url, CHARACTERS[c].name).catch((e) => log('character error: ' + e.message, 'err'));
