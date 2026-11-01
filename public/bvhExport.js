@@ -3,7 +3,6 @@
 import * as THREE from 'three';
 
 const RAD2DEG = 180 / Math.PI;
-const _v1 = new THREE.Vector3();
 const _q1 = new THREE.Quaternion();
 const _euler = new THREE.Euler(0, 0, 0, 'ZYX');
 
@@ -11,19 +10,21 @@ const shortName = (n) => n.replace(/^mixamorig\d*[:_]?/i, '');
 
 /**
  * Builds the BVH hierarchy tree definition and motion frame lines.
+ * Uses metric world positions for rest offsets and Hips translation,
+ * ensuring standard Blender / DCC scale (1 unit = 1 meter, character ~ 1.75m).
+ *
  * @param {import('./retarget.js').Rig} rig
  * @param {import('./retarget.js').Track} track
  * @param {string} clipName
- * @param {number} scale Scale multiplier (default: 100 for cm, standard Mixamo BVH)
+ * @param {number} scale Scale multiplier on meters (default: 1.0 for standard metric Blender units)
  * @returns {string} BVH file content
  */
-export function buildBVH(rig, track, clipName = 'motion', scale = 100) {
+export function buildBVH(rig, track, clipName = 'motion', scale = 1.0) {
   if (!rig || !track || !track.times.length) {
     throw new Error('Invalid rig or empty track for BVH export');
   }
 
   rig.reset();
-  const parentInv = new THREE.Matrix4().copy(rig.hips.parent.matrixWorld).invert();
 
   // Map bone short names to order index in track
   const orderMap = new Map();
@@ -57,8 +58,8 @@ export function buildBVH(rig, track, clipName = 'motion', scale = 100) {
     const orderIdx = orderMap.get(s);
     activeBones.push({ bone, s, orderIdx, isRoot });
 
-    const restPos = rig.rest[s] ? rig.rest[s].p : bone.position;
     const bonePrefix = bone.name.includes(':') ? bone.name : `mixamorig:${s}`;
+    const boneRest = rig.rest[s];
 
     if (isRoot) {
       hierarchyStr += `${indent}ROOT ${bonePrefix}\n`;
@@ -66,7 +67,30 @@ export function buildBVH(rig, track, clipName = 'motion', scale = 100) {
       hierarchyStr += `${indent}JOINT ${bonePrefix}\n`;
     }
     hierarchyStr += `${indent}{\n`;
-    hierarchyStr += `${indent}\tOFFSET ${formatOffset(restPos)}\n`;
+
+    // Compute rest offset in parent's rest coordinate frame (metric)
+    const restOffset = new THREE.Vector3();
+    if (isRoot) {
+      // Root position: Hips rest world position (in meters, ~1.04m above floor)
+      if (boneRest?.wp) {
+        restOffset.copy(boneRest.wp);
+      } else {
+        bone.getWorldPosition(restOffset);
+      }
+    } else if (bone.parent) {
+      const parentShort = shortName(bone.parent.name);
+      const parentRest = rig.rest[parentShort];
+      if (boneRest?.wp && parentRest?.wp && parentRest?.wq) {
+        // Delta in world space, rotated into parent rest orientation
+        restOffset.copy(boneRest.wp).sub(parentRest.wp).applyQuaternion(parentRest.wq.clone().invert());
+      } else {
+        // Fallback: local bone position normalized to meters if needed
+        restOffset.copy(bone.position);
+        if (restOffset.length() > 5.0) restOffset.multiplyScalar(0.01);
+      }
+    }
+
+    hierarchyStr += `${indent}\tOFFSET ${formatOffset(restOffset)}\n`;
 
     if (isRoot) {
       hierarchyStr += `${indent}\tCHANNELS 6 Xposition Yposition Zposition Zrotation Yrotation Xrotation\n`;
@@ -83,13 +107,52 @@ export function buildBVH(rig, track, clipName = 'motion', scale = 100) {
       // Leaf joint: emit End Site
       hierarchyStr += `${indent}\tEnd Site\n`;
       hierarchyStr += `${indent}\t{\n`;
-      // Reasonable tip offset along bone direction
-      const endOffset = new THREE.Vector3(0, 0.05, 0);
-      if (s.includes('Toe')) endOffset.set(0, 0, 0.1);
-      else if (s.includes('Head')) endOffset.set(0, 0.15, 0);
-      else if (s.includes('Hand') || s.includes('Thumb') || s.includes('Index') || s.includes('Middle') || s.includes('Ring') || s.includes('Pinky')) {
-        endOffset.set(0, 0.03, 0);
+
+      let endOffset = null;
+      // 1. Check if the model has a direct child tip bone in bone.children
+      // (Mixamo models have HeadTop_End, LeftToe_End, RightToe_End, HandThumb4, Index4, etc.)
+      for (const child of bone.children) {
+        if (child.isBone) {
+          const tipWorld = child.getWorldPosition(new THREE.Vector3());
+          const boneWp = boneRest?.wp || bone.getWorldPosition(new THREE.Vector3());
+          const boneWq = boneRest?.wq || bone.getWorldQuaternion(new THREE.Quaternion());
+          const candidate = tipWorld.sub(boneWp).applyQuaternion(boneWq.clone().invert());
+          if (candidate.length() >= 0.005) {
+            endOffset = candidate;
+            break;
+          }
+        }
       }
+
+      // 2. If no valid child tip bone, project along the bone's own heading with standard human lengths
+      if (!endOffset || endOffset.length() < 0.005) {
+        let len = 0.05; // 5 cm default
+        if (s.includes('Head')) len = 0.16; // 16 cm head height
+        else if (s.includes('Toe')) len = 0.09; // 9 cm toe length
+        else if (s.includes('Hand') || s.includes('Thumb') || s.includes('Index') || s.includes('Middle') || s.includes('Ring') || s.includes('Pinky')) {
+          len = 0.025; // 2.5 cm finger segment
+        }
+
+        if (bone.parent) {
+          const parentShort = shortName(bone.parent.name);
+          const parentRest = rig.rest[parentShort];
+          if (boneRest?.wp && parentRest?.wp && boneRest?.wq) {
+            const dir = boneRest.wp.clone().sub(parentRest.wp);
+            if (dir.lengthSq() > 1e-6) {
+              dir.normalize().multiplyScalar(len);
+              endOffset = dir.applyQuaternion(boneRest.wq.clone().invert());
+            }
+          }
+        }
+
+        if (!endOffset || endOffset.length() < 0.005) {
+          if (s.includes('Head')) endOffset = new THREE.Vector3(0, len, 0);
+          else if (s.includes('Toe')) endOffset = new THREE.Vector3(0, 0, len);
+          else if (s.startsWith('Right')) endOffset = new THREE.Vector3(-len, 0, 0);
+          else endOffset = new THREE.Vector3(len, 0, 0);
+        }
+      }
+
       hierarchyStr += `${indent}\t\tOFFSET ${formatOffset(endOffset)}\n`;
       hierarchyStr += `${indent}\t}\n`;
     }
@@ -118,11 +181,10 @@ export function buildBVH(rig, track, clipName = 'motion', scale = 100) {
 
     for (const item of activeBones) {
       if (item.isRoot) {
-        // Hips position in parent local coordinates
-        _v1.set(pWorld[0], pWorld[1], pWorld[2]).applyMatrix4(parentInv);
-        lineParts.push((_v1.x * scale).toFixed(4));
-        lineParts.push((_v1.y * scale).toFixed(4));
-        lineParts.push((_v1.z * scale).toFixed(4));
+        // Hips position in world coordinates (meters)
+        lineParts.push((pWorld[0] * scale).toFixed(4));
+        lineParts.push((pWorld[1] * scale).toFixed(4));
+        lineParts.push((pWorld[2] * scale).toFixed(4));
       }
 
       if (item.orderIdx != null && qArray) {
@@ -148,9 +210,10 @@ export function buildBVH(rig, track, clipName = 'motion', scale = 100) {
  * @param {import('./retarget.js').Rig} rig
  * @param {import('./retarget.js').Track} track
  * @param {string} filename Base filename without extension
+ * @param {number} scale Optional scale multiplier (default: 1.0 for meters, fits standard Blender grid)
  */
-export function exportBVHFile(rig, track, filename = 'motion') {
-  const bvhContent = buildBVH(rig, track, filename, 100);
+export function exportBVHFile(rig, track, filename = 'motion', scale = 1.0) {
+  const bvhContent = buildBVH(rig, track, filename, scale);
   const blob = new Blob([bvhContent], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

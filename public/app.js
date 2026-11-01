@@ -166,6 +166,7 @@ async function loadCharacter(src, name = 'X Bot') {
   stage.contactShadow(root);
   model = root;
   rig = newRig;
+  window.rig = newRig;
 
   for (const t of takes) {
     t.live = new Track(rig.order.length);
