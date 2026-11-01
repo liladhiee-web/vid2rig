@@ -139,9 +139,16 @@ class FastSingleDetector:
 
 def load_pipeline() -> None:
     if not SMPLX.exists():
-        state["error"] = f"SMPL-X missing: put SMPLX_NEUTRAL.npz in {SMPLX.parent}"
-        log(state["error"])
-        return
+        SMPLX.parent.mkdir(parents=True, exist_ok=True)
+        log(f"SMPL-X missing, downloading SMPLX_NEUTRAL.npz to {SMPLX}...")
+        try:
+            import urllib.request
+            urllib.request.urlretrieve("https://huggingface.co/camenduru/SMPLer-X/resolve/main/SMPLX_NEUTRAL.npz", str(SMPLX))
+            log("SMPL-X neutral body model downloaded successfully.")
+        except Exception as err:
+            state["error"] = f"SMPL-X missing: put SMPLX_NEUTRAL.npz in {SMPLX.parent} (auto-download failed: {err})"
+            log(state["error"])
+            return
     try:
         import gvhmr
         import gvhmr.cli.demo as demo
