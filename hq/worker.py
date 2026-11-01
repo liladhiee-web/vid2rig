@@ -293,8 +293,16 @@ def process(body: ProcessIn):
     video = out_dir / "input.mp4"
     if not video.exists():
         src = out_dir / "source.mp4"
-        with urllib.request.urlopen(body.video_url, timeout=30) as r, open(src, "wb") as f:
-            shutil.copyfileobj(r, f)
+        raw_url = body.video_url.strip()
+        if os.path.isfile(raw_url):
+            shutil.copyfile(raw_url, src)
+        elif raw_url.startswith("file://"):
+            local_p = urllib.request.url2pathname(raw_url[7:])
+            shutil.copyfile(local_p, src)
+        else:
+            req = urllib.request.Request(raw_url, headers={"User-Agent": "Mozilla/5.0 Prompt2Rig/1.0"})
+            with urllib.request.urlopen(req, timeout=45) as r, open(src, "wb") as f:
+                shutil.copyfileobj(r, f)
         # GVHMR runs at 30fps and would re-encode a 24fps clip with a slow preset; do it fast here.
         # It only ever sees 256px person crops, so cap the long side at 854px (H3 480P size): 720p+
         # sources (FLUX 3) otherwise cost ~2x in decode/crop for no accuracy gain.

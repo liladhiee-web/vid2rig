@@ -1,5 +1,6 @@
-// Prompt2Rig — tiny zero-dependency server.
-// Serves ./public and proxies fal.ai so the API key never reaches the browser.
+// Prompt2Rig Server — zero-dependency Node.js server.
+// Serves ./public, handles video uploads, serves with HTTP 206 range streaming,
+// saves GLB/BVH takes, and proxies the local GVHMR HQ worker.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,7 +8,11 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, 'public');
-const TAKES = path.join(ROOT, 'takes'); // exported takes for tools/render_blender.py
+const TAKES = path.join(ROOT, 'takes');
+const UPLOADS = path.join(ROOT, 'uploads');
+
+fs.mkdirSync(TAKES, { recursive: true });
+fs.mkdirSync(UPLOADS, { recursive: true });
 
 // --- .env -------------------------------------------------------------------
 const envFile = path.join(ROOT, '.env');
@@ -17,56 +22,10 @@ if (fs.existsSync(envFile)) {
     if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
   }
 }
-const FAL_KEY = process.env.FAL_KEY;
 const PORT = Number(process.env.PORT || 5177);
 const HQ_URL = process.env.HQ_URL || 'http://127.0.0.1:5178';
-if (!FAL_KEY) console.warn('[prompt2rig] FAL_KEY is not set — generation will fail. Put it in .env');
 
-const VIDEO_MODELS = {
-  // MiniMax H3 Max Turbo — faster than real time (~0.5s GPU for 5s @ 480P)
-  h3: {
-    t2v: 'minimax/h3-max-turbo/text-to-video',
-    i2v: 'minimax/h3-max-turbo/image-to-video',
-    input: (b, i2v) => ({
-      duration: Math.min(15, Math.max(1, Number(b.duration) || 5)),
-      resolution: ['480P', '768P', '1080P'].includes(b.resolution) ? b.resolution : '480P',
-      prompt_expansion_mode: 'disabled',
-      ...(i2v ? {} : { aspect_ratio: b.aspect_ratio || '16:9' }),
-    }),
-  },
-  // FLUX 3 Max — higher fidelity, ~real time (5s @ 720p ≈ 4.5s GPU, ~9s wall)
-  flux3: {
-    t2v: 'blackforestlabs/flux-3-max/text-to-video',
-    i2v: 'blackforestlabs/flux-3-max/image-to-video',
-    input: (b, i2v) => ({
-      duration: Math.min(20, Math.max(5, Math.round(Number(b.duration) || 5))),
-      resolution: b.resolution === '1080P' ? '1080p' : '720p',
-      generate_audio: false,
-      reasoning_level: b.reasoning_level === 'high' ? 'high' : 'low',
-      aspect_ratio: i2v ? 'auto' : (b.aspect_ratio || '16:9'),
-    }),
-  },
-};
-const IMAGE_MODEL = 'fal-ai/flux/schnell';
-
-async function falRun(model, input) {
-  const t0 = performance.now();
-  const res = await fetch(`https://fal.run/${model}`, {
-    method: 'POST',
-    headers: { Authorization: `Key ${FAL_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(input),
-  });
-  const text = await res.text();
-  let json;
-  try { json = JSON.parse(text); } catch { json = { raw: text }; }
-  if (!res.ok) {
-    const detail = json?.detail ? JSON.stringify(json.detail) : text.slice(0, 500);
-    throw Object.assign(new Error(`fal ${model} → ${res.status}: ${detail}`), { status: res.status });
-  }
-  return { ...json, _elapsed: (performance.now() - t0) / 1000 };
-}
-
-// --- request handling ----------------------------------------------------------
+// --- request handling helpers ------------------------------------------------
 function readJson(req) {
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
@@ -83,75 +42,138 @@ function send(res, status, body) {
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css',
-  '.json': 'application/json', '.glb': 'model/gltf-binary', '.png': 'image/png', '.svg': 'image/svg+xml',
+  '.json': 'application/json', '.glb': 'model/gltf-binary', '.bvh': 'text/plain; charset=utf-8',
+  '.png': 'image/png', '.svg': 'image/svg+xml', '.mp4': 'video/mp4', '.webm': 'video/webm',
+  '.mov': 'video/quicktime', '.woff2': 'font/woff2',
 };
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://localhost');
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   try {
-    if (req.method === 'POST' && url.pathname === '/api/video') {
-      const b = await readJson(req);
-      const model = VIDEO_MODELS[b.model] ? b.model : 'h3';
-      const mode = b.image_url ? 'i2v' : 't2v';
-      const input = { prompt: String(b.prompt || '').slice(0, 4000), ...VIDEO_MODELS[model].input(b, mode === 'i2v') };
-      if (b.seed != null && b.seed !== '') input.seed = Number(b.seed);
-      if (mode === 'i2v') input.image_url = b.image_url;
-      const out = await falRun(VIDEO_MODELS[model][mode], input);
-      console.log(`[video] ${model} ${mode} ${input.duration}s ${input.resolution} in ${out._elapsed.toFixed(1)}s (gpu ${out.timings?.inference?.toFixed?.(2) ?? '?'}s)`);
-      return send(res, 200, { model, mode, video_url: out.video?.url, timings: out.timings, elapsed: out._elapsed });
-    }
+    // Video upload endpoint (supports binary body with x-filename header)
+    if (req.method === 'POST' && url.pathname === '/api/upload') {
+      const origName = decodeURIComponent(req.headers['x-filename'] || 'upload.mp4');
+      const ext = (path.extname(origName) || '.mp4').toLowerCase();
+      const safeBase = path.basename(origName, ext).replace(/[^a-z0-9_-]+/gi, '_').slice(0, 50) || 'video';
+      const fname = `${Date.now()}_${safeBase}${ext}`;
+      const outPath = path.join(UPLOADS, fname);
+      const out = fs.createWriteStream(outPath);
 
-    if (req.method === 'POST' && url.pathname === '/api/image') {
-      const b = await readJson(req);
-      const out = await falRun(IMAGE_MODEL, {
-        prompt: String(b.prompt || '').slice(0, 4000),
-        image_size: b.image_size || 'landscape_16_9',
-        num_inference_steps: 4,
-        enable_safety_checker: true,
+      req.pipe(out);
+      await new Promise((resolve, reject) => {
+        out.on('finish', resolve);
+        out.on('error', reject);
+        req.on('error', reject);
       });
-      console.log(`[image] in ${out._elapsed.toFixed(1)}s`);
-      return send(res, 200, { image_url: out.images?.[0]?.url, elapsed: out._elapsed });
+
+      const stat = fs.statSync(outPath);
+      console.log(`[upload] saved uploads/${fname} (${(stat.size / (1024 * 1024)).toFixed(2)} MB)`);
+      return send(res, 200, {
+        url: `/uploads/${fname}`,
+        filename: origName,
+        size: stat.size,
+      });
     }
 
-    // Save an exported take (GLB body, ?name=…&source=<video url>) into ./takes for the Blender renderer.
+    // Serve uploaded videos with HTTP 206 Partial Content (Range requests) for smooth seeking
+    if (req.method === 'GET' && url.pathname.startsWith('/uploads/')) {
+      const rel = decodeURIComponent(url.pathname.replace(/^\/uploads\//, ''));
+      const filePath = path.normalize(path.join(UPLOADS, rel));
+      if (!filePath.startsWith(UPLOADS) || !fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+        res.writeHead(404); return res.end('not found');
+      }
+      const stat = fs.statSync(filePath);
+      const total = stat.size;
+      const range = req.headers.range;
+      const mimeType = MIME[path.extname(filePath)] || 'video/mp4';
+
+      if (range) {
+        const parts = range.replace(/bytes=/, '').split('-');
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : total - 1;
+        const chunksize = (end - start) + 1;
+        res.writeHead(206, {
+          'Content-Range': `bytes ${start}-${end}/${total}`,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': chunksize,
+          'Content-Type': mimeType,
+          'Cache-Control': 'public, max-age=3600',
+        });
+        return fs.createReadStream(filePath, { start, end }).pipe(res);
+      } else {
+        res.writeHead(200, {
+          'Content-Length': total,
+          'Accept-Ranges': 'bytes',
+          'Content-Type': mimeType,
+          'Cache-Control': 'public, max-age=3600',
+        });
+        return fs.createReadStream(filePath).pipe(res);
+      }
+    }
+
+    // Save an exported take (.glb or .bvh) into ./takes
     if (req.method === 'POST' && url.pathname === '/api/takes') {
       const name = (url.searchParams.get('name') || 'take').replace(/[^a-z0-9_-]+/gi, '_').slice(0, 80);
+      const ext = url.searchParams.get('ext') === 'bvh' ? '.bvh' : '.glb';
       const chunks = []; let size = 0;
-      for await (const c of req) { size += c.length; if (size > 100e6) throw Object.assign(new Error('take too large'), { status: 413 }); chunks.push(c); }
-      fs.mkdirSync(TAKES, { recursive: true });
-      fs.writeFileSync(path.join(TAKES, name + '.glb'), Buffer.concat(chunks));
-      const meta = { name, source: url.searchParams.get('source') || null, prompt: url.searchParams.get('prompt') || '', saved: new Date().toISOString() };
+      for await (const c of req) {
+        size += c.length;
+        if (size > 150e6) throw Object.assign(new Error('take too large'), { status: 413 });
+        chunks.push(c);
+      }
+      const filename = name + ext;
+      fs.writeFileSync(path.join(TAKES, filename), Buffer.concat(chunks));
+      const meta = {
+        name, ext,
+        source: url.searchParams.get('source') || null,
+        saved: new Date().toISOString(),
+      };
       fs.writeFileSync(path.join(TAKES, name + '.json'), JSON.stringify(meta, null, 2));
-      console.log(`[take] saved takes/${name}.glb`);
-      return send(res, 200, { path: `takes/${name}.glb` });
+      console.log(`[take] saved takes/${filename}`);
+      return send(res, 200, { path: `takes/${filename}` });
     }
 
-    // HQ pass: forward to the local GVHMR worker (hq/worker.py).
+    // HQ pass: forward to the local GVHMR worker (hq/worker.py)
     if (url.pathname === '/api/hq/health') {
       try {
-        const r = await fetch(`${HQ_URL}/health`, { signal: AbortSignal.timeout(2000) });
+        const r = await fetch(`${HQ_URL}/health`, { signal: AbortSignal.timeout(2500) });
         return send(res, 200, await r.json());
-      } catch { return send(res, 200, { ok: false, error: 'worker offline' }); }
+      } catch {
+        return send(res, 200, { ok: false, error: 'worker offline' });
+      }
     }
+
     if (req.method === 'POST' && url.pathname === '/api/hq') {
       const b = await readJson(req);
+      let videoUrl = b.video_url;
+      // Resolve relative upload URL to full local server URL
+      if (videoUrl && videoUrl.startsWith('/uploads/')) {
+        videoUrl = `http://127.0.0.1:${PORT}${videoUrl}`;
+      }
       const r = await fetch(`${HQ_URL}/process`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ video_url: b.video_url, ...(b.hands ? { hands: b.hands } : {}) }),
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ video_url: videoUrl, ...(b.hands ? { hands: b.hands } : {}) }),
       });
       const text = await r.text();
       res.writeHead(r.status, { 'Content-Type': 'application/json' });
       return res.end(text);
     }
 
-    if (req.method === 'GET') {
+    // Static files from ./public
+    if (req.method === 'GET' || req.method === 'HEAD') {
       let p = decodeURIComponent(url.pathname);
       if (p === '/') p = '/index.html';
       const file = path.normalize(path.join(PUBLIC, p));
       if (!file.startsWith(PUBLIC) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
         res.writeHead(404); return res.end('not found');
       }
-      res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+      const ext = path.extname(file).toLowerCase();
+      res.writeHead(200, {
+        'Content-Type': MIME[ext] || 'application/octet-stream',
+        'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600',
+      });
+      if (req.method === 'HEAD') return res.end();
       return fs.createReadStream(file).pipe(res);
     }
 
@@ -162,4 +184,9 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => console.log(`Prompt2Rig → http://localhost:${PORT}`));
+server.listen(PORT, () => {
+  console.log(`\n==================================================`);
+  console.log(`  Prompt2Rig Motion Capture Studio`);
+  console.log(`  Web Server listening on http://localhost:${PORT}`);
+  console.log(`==================================================\n`);
+});
