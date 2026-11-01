@@ -454,10 +454,52 @@ function runGVHMR(take) {
   const cardStatus = $('#card-status');
   if (cardStatus) cardStatus.textContent = 'solving (gvhmr)';
 
-  take.hqPromise = api('/api/hq', {
-    video_url: take.videoUrl,
-    ...(take.handsMethod ? { hands: take.handsMethod } : {}),
-  })
+  take.hqPromise = (async () => {
+    // 1. Submit request to /api/hq
+    const startRes = await api('/api/hq', {
+      video_url: take.videoUrl,
+      ...(take.handsMethod ? { hands: take.handsMethod } : {}),
+    });
+
+    // If already done or direct legacy payload
+    if (startRes && startRes.status === 'done' && startRes.global_orient) {
+      return startRes;
+    }
+    if (startRes && startRes.global_orient && !startRes.jobId) {
+      return startRes;
+    }
+
+    const jobId = startRes?.jobId;
+    if (!jobId) {
+      return startRes;
+    }
+
+    // 2. Poll /api/hq/job every 2s (completely eliminates Cloudflare 125s Error 524 timeouts)
+    const pollStart = performance.now();
+    while (true) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      const elapsed = Math.round((performance.now() - pollStart) / 1000);
+
+      showLoading(
+        'SOLVING 3D MOTION WITH GVHMR',
+        `Running GPU motion solver & SMPL mesh recovery (${elapsed}s elapsed)...`,
+        Math.min(95, 45 + Math.round(elapsed * 0.4))
+      );
+      if (cardStatus) cardStatus.textContent = `solving (${elapsed}s)`;
+
+      const pollRes = await fetch(`/api/hq/job?jobId=${encodeURIComponent(jobId)}`).then((r) => {
+        if (!r.ok && r.status !== 500) throw new Error(`polling error: ${r.status}`);
+        return r.json();
+      });
+
+      if (pollRes.status === 'done') {
+        return pollRes;
+      }
+      if (pollRes.status === 'error') {
+        throw new Error(pollRes.error || 'GVHMR solver failed');
+      }
+    }
+  })()
     .then((r) => {
       take.hqRaw = r;
       take.hq = bakeSmpl(r);

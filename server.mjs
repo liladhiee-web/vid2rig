@@ -4,6 +4,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -13,6 +14,9 @@ const UPLOADS = path.join(ROOT, 'uploads');
 
 fs.mkdirSync(TAKES, { recursive: true });
 fs.mkdirSync(UPLOADS, { recursive: true });
+
+// Background job store for GVHMR to prevent Cloudflare 125s Error 524 timeouts
+const HQ_JOBS = new Map();
 
 // --- .env -------------------------------------------------------------------
 const envFile = path.join(ROOT, '.env');
@@ -143,6 +147,26 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    // HQ job status polling endpoint (prevents Cloudflare 125s Error 524 timeouts)
+    if (req.method === 'GET' && url.pathname === '/api/hq/job') {
+      const jobId = url.searchParams.get('jobId');
+      if (!jobId || !HQ_JOBS.has(jobId)) {
+        return send(res, 404, { error: 'job not found' });
+      }
+      const job = HQ_JOBS.get(jobId);
+      if (job.status === 'done') {
+        return send(res, 200, { jobId, status: 'done', ...job.result });
+      }
+      if (job.status === 'error') {
+        return send(res, 500, { jobId, status: 'error', error: job.error });
+      }
+      return send(res, 200, {
+        jobId,
+        status: 'running',
+        elapsed: Math.round((Date.now() - job.createdAt) / 1000),
+      });
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/hq') {
       const b = await readJson(req);
       let videoUrl = b.video_url;
@@ -150,14 +174,52 @@ const server = http.createServer(async (req, res) => {
       if (videoUrl && videoUrl.startsWith('/uploads/')) {
         videoUrl = `http://127.0.0.1:${PORT}${videoUrl}`;
       }
-      const r = await fetch(`${HQ_URL}/process`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ video_url: videoUrl, ...(b.hands ? { hands: b.hands } : {}) }),
-      });
-      const text = await r.text();
-      res.writeHead(r.status, { 'Content-Type': 'application/json' });
-      return res.end(text);
+
+      // Generate deterministic jobId based on video URL and hands option
+      const jobId = crypto.createHash('md5').update(`${videoUrl}:${b.hands || ''}`).digest('hex').slice(0, 16);
+
+      let job = HQ_JOBS.get(jobId);
+      if (job && job.status === 'done') {
+        return send(res, 200, { jobId, status: 'done', ...job.result });
+      }
+      if (job && job.status === 'error') {
+        if (Date.now() - job.createdAt > 15000) {
+          HQ_JOBS.delete(jobId);
+          job = null;
+        } else {
+          return send(res, 500, { jobId, status: 'error', error: job.error });
+        }
+      }
+
+      if (!job) {
+        job = { status: 'running', createdAt: Date.now() };
+        HQ_JOBS.set(jobId, job);
+
+        console.log(`[hq] starting async GVHMR job ${jobId} for ${videoUrl}`);
+        fetch(`${HQ_URL}/process`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ video_url: videoUrl, ...(b.hands ? { hands: b.hands } : {}) }),
+        })
+          .then(async (r) => {
+            if (!r.ok) {
+              const errText = await r.text();
+              console.error(`[hq] job ${jobId} failed (${r.status}): ${errText}`);
+              HQ_JOBS.set(jobId, { status: 'error', error: `GVHMR worker returned ${r.status}: ${errText}`, createdAt: Date.now() });
+            } else {
+              const data = await r.json();
+              console.log(`[hq] job ${jobId} finished (${data.n} frames in ${data.elapsed?.toFixed(1) || '?'}s)`);
+              HQ_JOBS.set(jobId, { status: 'done', result: data, createdAt: Date.now() });
+            }
+          })
+          .catch((err) => {
+            console.error(`[hq] job ${jobId} exception: ${err.message}`);
+            HQ_JOBS.set(jobId, { status: 'error', error: err.message, createdAt: Date.now() });
+          });
+      }
+
+      // Return 202 Accepted with jobId immediately so the client can poll without timing out
+      return send(res, 202, { jobId, status: 'running' });
     }
 
     // Static files from ./public
