@@ -26,6 +26,9 @@ export function buildBVH(rig, track, clipName = 'motion', scale = 1.0, options =
   }
 
   rig.reset();
+  const rootRestPos = rig.rest.Hips?.wp
+    ? rig.rest.Hips.wp.clone()
+    : (rig.hips ? rig.hips.getWorldPosition(new THREE.Vector3()) : new THREE.Vector3(0, 1.04, 0));
 
   // Map bone short names to order index in track
   const orderMap = new Map();
@@ -188,8 +191,8 @@ export function buildBVH(rig, track, clipName = 'motion', scale = 1.0, options =
         let rootZ = pWorld[2];
         if (inPlace) {
           // In-Place (Game Dev): Lock horizontal root translation (X/Z) to origin rest offset
-          rootX = restOffset.x;
-          rootZ = restOffset.z;
+          rootX = rootRestPos.x;
+          rootZ = rootRestPos.z;
         }
         lineParts.push((rootX * scale).toFixed(4));
         lineParts.push((rootY * scale).toFixed(4));
