@@ -143,6 +143,74 @@
   .video-card .vmeta { display: flex; gap: 8px; font: 10.5px var(--mono); color: var(--primary); }
   .video-card .vmeta span { background: #071910; padding: 2px 6px; border: 1px solid var(--primary-dim); clip-path: var(--notch); }
 
+  /* Engine cards */
+  .engine-badge-card {
+    background: #071910;
+    border: 1px solid var(--primary-dim);
+    box-shadow: 0 0 12px rgba(0,255,136,0.12);
+    padding: 12px;
+    clip-path: var(--notch);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .engine-badge-card .badge-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .engine-tag.main {
+    font: 9.5px var(--mono);
+    font-weight: 700;
+    background: var(--primary);
+    color: #000;
+    padding: 3px 7px;
+    clip-path: var(--notch);
+    letter-spacing: .5px;
+  }
+  .engine-title {
+    font: 12px var(--pixel);
+    letter-spacing: .5px;
+    color: var(--bone);
+  }
+  .engine-desc {
+    margin: 0;
+    font: 11px/1.35 var(--mono);
+    color: var(--ash);
+  }
+  .engine-status {
+    font: 10.5px var(--mono);
+    color: var(--primary);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 2px;
+  }
+  .engine-status::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    background: currentColor;
+    border-radius: 50%;
+    box-shadow: 0 0 6px currentColor;
+  }
+  .opt-engine-box {
+    background: var(--coal2);
+    border: 1px solid var(--rule);
+    padding: 10px 12px;
+    clip-path: var(--notch);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .title-sub {
+    font: 9.5px var(--mono);
+    color: var(--ash);
+    letter-spacing: .6px;
+    text-transform: uppercase;
+  }
+
   select { background: var(--coal2); color: var(--bone); border: 1px solid var(--rule); padding: 6px 24px 6px 8px; clip-path: var(--notch); appearance: none; cursor: pointer;
     background-image: linear-gradient(45deg, transparent 50%, var(--primary) 50%), linear-gradient(135deg, var(--primary) 50%, transparent 50%);
     background-position: calc(100% - 13px) 50%, calc(100% - 9px) 50%; background-size: 4px 4px; background-repeat: no-repeat; }
@@ -261,9 +329,10 @@
       </div>
     </div>
     <div class="pills">
+      <span class="pill ok" id="pill-engine">ENGINE: GVHMR (MAIN)</span>
+      <span class="pill" id="pill-hq">gvhmr worker…</span>
+      <span class="pill" id="pill-pose">mediapipe: optional</span>
       <span class="pill" id="pill-rig">character…</span>
-      <span class="pill" id="pill-pose">pose model…</span>
-      <span class="pill" id="pill-hq">hq worker…</span>
     </div>
 
     <!-- Video Upload Section (AI generation removed: pure upload workflow) -->
@@ -289,22 +358,42 @@
           <span id="card-status">ready</span>
         </div>
         <div class="btn-group">
-          <button class="btn" id="btn-reprocess">⚡ Re-process</button>
+          <button class="btn" id="btn-reprocess">⚡ Re-process with GVHMR</button>
           <button class="btn" id="btn-change-vid">📂 New Video</button>
         </div>
       </div>
     </div>
 
-    <!-- Motion & Pose Pipeline Settings -->
+    <!-- Motion & Pose Pipeline Settings (GVHMR Main Engine) -->
     <div class="section">
-      <label class="title">Motion Pipeline</label>
-      <label class="check"><input type="checkbox" id="hq" /><span><b>HQ pass · GVHMR on your GPU</b><small>Fast MediaPipe tracking, plus high-fidelity GVHMR motion solver</small></span></label>
-      <label class="check"><input type="checkbox" id="waitHq" /><span>hold playback until HQ is ready<small>Wait for full GPU solver before previewing take</small></span></label>
-      <label class="check"><input type="checkbox" id="hands" /><span>track fingers<small>Wrist and 15 finger joints per hand</small></span></label>
-      <label class="check"><input type="checkbox" id="rootMotion" /><span>root motion<small>Extract 3D hip translation across ground plane</small></span></label>
-      <div class="row"><span>live pose model</span><select id="poseModel"><option value="full">full (smooth & fast)</option><option value="heavy">heavy (high accuracy)</option></select></div>
-      <div class="row"><span>live smoothing</span><input type="range" id="smoothing" min="0" max="1" step="0.05" /></div>
-      <label class="check"><input type="checkbox" id="showSkel" /><span>skeleton overlay on video</span></label>
+      <label class="title">3D Motion Engine</label>
+
+      <!-- Main Engine: GVHMR -->
+      <div class="engine-badge-card main-engine">
+        <div class="badge-header">
+          <span class="engine-tag main">MAIN ENGINE</span>
+          <span class="engine-title">GVHMR 3D SMPL</span>
+        </div>
+        <p class="engine-desc">GPU motion solver extracting 3D SMPL rotations, translation & ground contacts.</p>
+        <div class="engine-status" id="engine-gvhmr-status">Checking GPU worker...</div>
+      </div>
+
+      <label class="check"><input type="checkbox" id="hands" checked /><span>track fingers<small>WiLoR finger & wrist solver (15 joints/hand)</small></span></label>
+      <label class="check"><input type="checkbox" id="rootMotion" checked /><span>root motion<small>Extract 3D hip translation across ground plane</small></span></label>
+
+      <!-- Optional MediaPipe Preview / Fallback -->
+      <div class="opt-engine-box">
+        <label class="title-sub">Optional In-Browser Preview</label>
+        <label class="check">
+          <input type="checkbox" id="useMediaPipe" />
+          <span><b>MediaPipe Live Preview (Optional)</b><small>In-browser live pose tracking while waiting for GVHMR, or when GPU is offline</small></span>
+        </label>
+        <div id="mediapipe-controls" style="display:none; margin-top:8px; flex-direction:column; gap:8px;">
+          <div class="row"><span>pose model</span><select id="poseModel"><option value="full">full (smooth & fast)</option><option value="heavy">heavy (high accuracy)</option></select></div>
+          <div class="row"><span>smoothing</span><input type="range" id="smoothing" min="0" max="1" step="0.05" /></div>
+          <label class="check"><input type="checkbox" id="showSkel" checked /><span>skeleton overlay on video</span></label>
+        </div>
+      </div>
     </div>
 
     <!-- 3D Character & Rigging -->

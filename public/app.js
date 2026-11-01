@@ -24,8 +24,16 @@ const MP_MODEL = (v) => `https://storage.googleapis.com/mediapipe-models/pose_la
 
 // ---- Settings -----------------------------------------------------------------
 const DEFAULTS = {
-  hq: true, waitHq: false, rootMotion: true, poseModel: 'full', smoothing: 0.5,
-  showSkel: true, character: 'xbot', swap: false, cinematic: false, hands: true,
+  engine: 'gvhmr',      // GVHMR is the primary motion solver
+  useMediaPipe: false,  // MediaPipe is optional in-browser preview / client fallback
+  hands: true,
+  rootMotion: true,
+  poseModel: 'full',
+  smoothing: 0.5,
+  showSkel: true,
+  character: 'xbot',
+  swap: false,
+  cinematic: false,
 };
 const settings = (() => {
   try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('p2r_cfg') || '{}') }; }
@@ -226,8 +234,9 @@ function showOnStage(key) {
   pill('rig', (key ? CHARACTERS[key].name : (CHARACTERS[settings.character]?.name || 'character')).toLowerCase(), 'ok');
 }
 
-// ---- MediaPipe Pose Initialization --------------------------------------------
+// ---- MediaPipe Pose Initialization (Optional Preview) -------------------------
 let landmarker = null, vision = null, mpTs = 0;
+let poseInitPromise = null;
 
 async function initPose(variant = 'full') {
   pill('pose', 'loading ' + variant, 'busy');
@@ -249,8 +258,20 @@ async function initPose(variant = 'full') {
     landmarker = await make('CPU');
   }
   old?.close();
-  pill('pose', 'pose: ' + variant, 'ok');
-  log(`MediaPipe Pose model (${variant}) initialized`, 'ok');
+  pill('pose', 'mediapipe: ' + variant, 'ok');
+  log(`MediaPipe Pose model (${variant}) initialized (optional preview)`, 'ok');
+  return landmarker;
+}
+
+function ensurePoseReady() {
+  if (landmarker) return Promise.resolve(landmarker);
+  if (poseInitPromise) return poseInitPromise;
+  poseInitPromise = initPose(settings.poseModel).catch((e) => {
+    log('pose model failed: ' + e.message, 'err');
+    pill('pose', 'failed', 'bad');
+    poseInitPromise = null;
+  });
+  return poseInitPromise;
 }
 
 // ---- Takes & Storage ----------------------------------------------------------
@@ -293,16 +314,16 @@ function renderTakes() {
   for (const t of [...takes].reverse()) {
     const card = document.createElement('div');
     card.className = 'take' + (t === current ? ' playing' : '');
-    const live = t.liveDone ? '<span class="pill ok">live</span>' : (t.status === 'processing' ? '<span class="pill busy">tracking</span>' : '');
+    const live = t.liveDone ? '<span class="pill ok">live preview</span>' : '';
     const hq = {
-      running: '<span class="pill busy">hq solver</span>',
-      done: `<span class="pill ok">hq ${t.timings.hq ? t.timings.hq.toFixed(1) + 's' : ''}</span>`,
-      error: '<span class="pill bad">hq failed</span>',
-    }[t.hqStatus] || '';
+      running: '<span class="pill busy">gvhmr solving</span>',
+      done: `<span class="pill ok">gvhmr ${t.timings.hq ? t.timings.hq.toFixed(1) + 's' : 'ready'}</span>`,
+      error: '<span class="pill bad">gvhmr failed</span>',
+    }[t.hqStatus] || (t.status === 'processing' ? '<span class="pill busy">processing</span>' : '');
 
     card.innerHTML = `
       <div class="p" title="${escapeHtml(t.name)}">#${t.id} · ${escapeHtml(t.name)}</div>
-      <div class="meta">${live}${hq}</div>
+      <div class="meta">${hq}${live}</div>
       <div class="actions">
         <button class="btn" data-a="play">▶ play</button>
         <button class="btn" data-a="glb" ${t.best ? '' : 'disabled'}>↓ glb</button>
@@ -319,67 +340,119 @@ function renderTakes() {
 
 const escapeHtml = (s) => (s || '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-// ---- Video Upload & Processing Workflow --------------------------------------
+// ---- Video Upload & Processing Workflow (GVHMR Main Engine) -------------------
 async function handleVideoFile(file) {
   if (!file) return;
   log(`selected video: ${file.name} (${(file.size / (1024 * 1024)).toFixed(2)} MB)`);
 
   const take = new Take(file.name);
-  // Instant local playback so tracking starts without server upload latency
   take.localBlobUrl = URL.createObjectURL(file);
   take.videoUrl = take.localBlobUrl;
   takes.push(take);
   renderTakes();
 
+  const card = $('#active-video-card');
+  if (card) {
+    card.classList.add('active');
+    $('#card-filename').textContent = take.name;
+    $('#card-duration').textContent = '...';
+    $('#card-res').textContent = '...';
+    $('#card-status').textContent = 'uploading';
+  }
+
   // Show Loading Overlay
-  showLoading('UPLOADING & PREPARING VIDEO', `Reading ${file.name}...`);
+  showLoading('SOLVING 3D MOTION WITH GVHMR', `Uploading ${file.name} for GPU motion recovery...`, 20);
 
-  // Start background upload to /api/upload so the HQ worker or remote Kaggle can access it
-  const uploadPromise = (async () => {
-    try {
-      const res = await fetch('/api/upload', {
-        method: 'POST',
-        headers: { 'x-filename': encodeURIComponent(file.name) },
-        body: file,
-      });
-      if (res.ok) {
-        const json = await res.json();
-        take.videoUrl = json.url;
-        log(`video uploaded to server: ${json.url}`, 'ok');
-      }
-    } catch (e) {
-      log('server upload skipped (local mode active): ' + e.message);
-    }
-  })();
-
-  // Play and track immediately
-  playTake(take);
-
-  // Trigger HQ pass if enabled and online
-  uploadPromise.then(() => {
-    if (settings.hq && hqOnline) runHQ(take);
-  });
-}
-
-// ---- HQ (GVHMR) Pass ----------------------------------------------------------
-let hqOnline = false;
-
-async function checkHQ() {
+  // Background upload to server for GVHMR worker
+  let serverUploadedUrl = null;
   try {
-    const r = await api('/api/hq/health');
-    hqOnline = !!r.ok;
-    pill('hq', r.ok ? `hq: ${(r.device || 'gpu').toLowerCase()}` : 'hq: offline', r.ok ? 'ok' : 'bad');
-  } catch {
-    hqOnline = false;
-    pill('hq', 'hq worker offline', 'bad');
+    const res = await fetch('/api/upload', {
+      method: 'POST',
+      headers: { 'x-filename': encodeURIComponent(file.name) },
+      body: file,
+    });
+    if (res.ok) {
+      const json = await res.json();
+      serverUploadedUrl = json.url;
+      take.videoUrl = serverUploadedUrl;
+      log(`video ready for GVHMR: ${serverUploadedUrl}`, 'ok');
+    }
+  } catch (e) {
+    log('Server upload failed: ' + e.message, 'err');
+  }
+
+  // GVHMR is the MAIN engine
+  if (hqOnline) {
+    showLoading('SOLVING 3D MOTION WITH GVHMR', 'Running GPU human motion recovery & SMPL rotations...', 45);
+    runGVHMR(take);
+
+    // If optional MediaPipe preview is enabled, also run live preview while waiting
+    if (settings.useMediaPipe) {
+      ensurePoseReady().then(() => playTake(take));
+    }
+  } else {
+    // Worker offline: Notify user and handle fallback
+    log('GVHMR GPU worker is offline. Checking fallback...', 'err');
+    if (settings.useMediaPipe) {
+      log('Running optional MediaPipe fallback...', 'ok');
+      ensurePoseReady().then(() => playTake(take));
+    } else {
+      hideLoading();
+      banner('GVHMR Worker Offline — Connect GPU or enable MediaPipe fallback');
+      const useFallback = confirm('GVHMR GPU worker is currently offline.\n\nWould you like to enable the optional MediaPipe in-browser engine as fallback?');
+      if (useFallback) {
+        settings.useMediaPipe = true;
+        const cb = $('#useMediaPipe');
+        if (cb) cb.checked = true;
+        save();
+        ensurePoseReady().then(() => playTake(take));
+      } else {
+        playTake(take);
+      }
+    }
   }
 }
 
-function runHQ(take) {
+// ---- GVHMR Main Engine Solver Pass --------------------------------------------
+let hqOnline = false;
+
+async function checkHQ() {
+  const statusEl = $('#engine-gvhmr-status');
+  try {
+    const r = await api('/api/hq/health');
+    hqOnline = !!r.ok;
+    const deviceStr = r.device ? r.device.toLowerCase() : 'gpu';
+    if (r.ok) {
+      pill('hq', `gvhmr: ${deviceStr}`, 'ok');
+      if (statusEl) {
+        statusEl.textContent = `Worker Online · ${deviceStr.toUpperCase()}`;
+        statusEl.style.color = 'var(--primary)';
+      }
+    } else {
+      pill('hq', 'gvhmr: offline', 'bad');
+      if (statusEl) {
+        statusEl.textContent = 'Worker Offline · Connect GPU worker or use MediaPipe';
+        statusEl.style.color = 'var(--err)';
+      }
+    }
+  } catch {
+    hqOnline = false;
+    pill('hq', 'gvhmr: offline', 'bad');
+    if (statusEl) {
+      statusEl.textContent = 'Worker Offline · Connect GPU worker or use MediaPipe';
+      statusEl.style.color = 'var(--err)';
+    }
+  }
+}
+
+function runGVHMR(take) {
   const t0 = performance.now();
   take.hqStatus = 'running';
   renderTakes();
-  log(`#${take.id} starting HQ GPU motion solver...`, 'hq');
+  log(`#${take.id} GVHMR Main Engine: solving 3D motion on GPU...`, 'hq');
+
+  const cardStatus = $('#card-status');
+  if (cardStatus) cardStatus.textContent = 'solving (gvhmr)';
 
   take.hqPromise = api('/api/hq', {
     video_url: take.videoUrl,
@@ -391,17 +464,30 @@ function runHQ(take) {
       take.hqAt = performance.now();
       take.hqStatus = 'done';
       take.timings.hq = (performance.now() - t0) / 1000;
-      log(`#${take.id} HQ motion solved in ${take.timings.hq.toFixed(1)}s (${r.n} frames)`, 'hq');
+      log(`#${take.id} GVHMR solved ${r.n} frames in ${take.timings.hq.toFixed(1)}s!`, 'ok');
+
+      hideLoading();
+      banner(`GVHMR Solved (${take.timings.hq.toFixed(1)}s)`);
+      setTimeout(() => banner(''), 3000);
+
+      if (cardStatus) cardStatus.textContent = 'gvhmr ready';
+
+      // Automatically play the solved motion with the character!
+      playTake(take);
     })
     .catch((e) => {
       take.hqStatus = 'error';
-      log(`#${take.id} HQ solver error: ${e.message}`, 'err');
+      log(`#${take.id} GVHMR solver error: ${e.message}`, 'err');
+      hideLoading();
+      banner('GVHMR Solve Failed: ' + e.message);
+      if (cardStatus) cardStatus.textContent = 'error';
     })
     .finally(() => {
       renderTakes();
       updateExportButtons();
     });
 }
+const runHQ = runGVHMR;
 
 // ---- SMPL Baking -------------------------------------------------------------
 const _kp = Array.from({ length: 21 }, () => new THREE.Vector3());
@@ -507,7 +593,7 @@ function playTake(take) {
       $('#card-filename').textContent = take.name;
       $('#card-duration').textContent = `${video.duration.toFixed(1)}s`;
       $('#card-res').textContent = `${video.videoWidth}x${video.videoHeight}`;
-      $('#card-status').textContent = 'tracking';
+      $('#card-status').textContent = take.hq ? 'gvhmr ready' : (settings.useMediaPipe ? 'tracking (preview)' : 'ready');
     }
   };
 
@@ -516,31 +602,35 @@ function playTake(take) {
   video.play().catch(() => {});
   renderTakes();
 
-  showLoading('TRACKING POSE WITH MEDIAPIPE', `Analyzing ${take.name}...`);
+  if (take.hq) {
+    hideLoading();
+  } else if (settings.useMediaPipe) {
+    showLoading('TRACKING POSE WITH MEDIAPIPE (PREVIEW)', `Analyzing ${take.name}...`);
+  }
 }
 
 video.addEventListener('ended', () => {
   if (settings.swap && rig) {
     swapCharacter().catch((e) => log('swap failed: ' + e.message, 'err'));
   }
-  if (current && !current.liveDone) {
+  if (current && !current.liveDone && settings.useMediaPipe) {
     current.liveDone = current.live.length > 3;
     log(`#${current.id} MediaPipe tracking finished: ${current.live.length} frames`, 'ok');
     hideLoading();
     const st = $('#card-status');
-    if (st) st.textContent = 'retargeted';
+    if (st) st.textContent = current.hq ? 'gvhmr ready' : 'retargeted (preview)';
     renderTakes();
   }
   video.currentTime = 0;
   video.play().catch(() => {});
 });
 
-// Lag-free detection hook
+// Detection hook (only runs if optional MediaPipe is enabled)
 let lastDetectT = -1;
 let videoFrameCallbackHandle = null;
 
 function detectIfNewFrame() {
-  if (!landmarker || !rig || !current || video.readyState < 2 || video.seeking) return;
+  if (!settings.useMediaPipe || !landmarker || !rig || !current || video.readyState < 2 || video.seeking) return;
   const mediaTime = video.currentTime;
   if (mediaTime === lastDetectT) return;
   if (mediaTime < lastDetectT) liveLoopReset();
@@ -660,13 +750,13 @@ function tick() {
     const live = current.liveDone ? current.live.sample(t, bufA) : liveSnap;
     const hq = current.hq ? current.hq.sample(t, bufB) : null;
     let snap = hq || live;
-    let src = hq ? 'HQ · GVHMR' : live ? 'Live · MediaPipe' : '—';
+    let src = hq ? 'GVHMR (MAIN ENGINE)' : live ? 'MediaPipe (PREVIEW)' : '—';
 
-    if (hq && live) {
+    if (hq && live && current.hqAt && performance.now() - current.hqAt < 600) {
       const w = Math.min(1, (performance.now() - current.hqAt) / 600);
       if (w < 1) {
         snap = blendSnapshots(live.q, live.p, hq.q, hq.p, w, bufC);
-        src = 'Live → HQ Blend';
+        src = 'Preview → GVHMR Blend';
       }
     }
     if (snap && switchFrom) {
@@ -779,7 +869,14 @@ if (dropzone && fileInput) {
 const reprocessBtn = $('#btn-reprocess');
 if (reprocessBtn) {
   reprocessBtn.onclick = () => {
-    if (current) playTake(current);
+    if (current) {
+      if (hqOnline) {
+        showLoading('SOLVING 3D MOTION WITH GVHMR', 'Re-solving motion with GVHMR GPU engine...');
+        runGVHMR(current);
+      } else {
+        playTake(current);
+      }
+    }
   };
 }
 
@@ -811,15 +908,26 @@ $('#file-char').onchange = (e) => {
 };
 
 // Bind UI settings
-bindSetting('hq', 'checked');
-bindSetting('waitHq', 'checked');
 bindSetting('hands', 'checked', () => {
   if (rig) for (const t of takes) if (t.hqRaw) t.hq = bakeSmpl(t.hqRaw);
 });
 bindSetting('rootMotion', 'checked');
+
+// Optional MediaPipe Preview Toggle
+bindSetting('useMediaPipe', 'checked', (on) => {
+  const ctrl = $('#mediapipe-controls');
+  if (ctrl) ctrl.style.display = on ? 'flex' : 'none';
+  if (on) {
+    pill('pose', 'loading pose…', 'busy');
+    ensurePoseReady().then(() => pill('pose', 'mediapipe: on', 'ok'));
+  } else {
+    pill('pose', 'mediapipe: optional', '');
+    if (overlay && octx) octx.clearRect(0, 0, overlay.width, overlay.height);
+  }
+});
 bindSetting('showSkel', 'checked');
 bindSetting('smoothing', 'value', setSmoothing);
-bindSetting('poseModel', 'value', (v) => initPose(v));
+bindSetting('poseModel', 'value', (v) => { if (settings.useMediaPipe) initPose(v); });
 bindSetting('swap', 'checked', (on) => { if (!on && model) showOnStage(null); });
 bindSetting('cinematic', 'checked', (on) => stage.setCinematic(on));
 bindSetting('character', 'value', (c) => {
@@ -843,10 +951,14 @@ loadCharacter(startChar.url, startChar.name).catch((e) => {
   log('character failed: ' + e.message, 'err');
   pill('rig', 'failed', 'bad');
 });
-initPose(settings.poseModel).catch((e) => {
-  log('pose model failed: ' + e.message, 'err');
-  pill('pose', 'failed', 'bad');
-});
+
+// Lazy-load MediaPipe ONLY if optional preview was enabled
+if (settings.useMediaPipe) {
+  ensurePoseReady();
+} else {
+  pill('pose', 'mediapipe: optional', '');
+}
+
 checkHQ();
-setInterval(checkHQ, 8000);
-log('prompt2rig ready. drop or upload any video clip to capture motion');
+setInterval(checkHQ, 6000);
+log('Vid2Rig Studio ready. GVHMR is the main 3D engine (MediaPipe optional)');
